@@ -1,3 +1,4 @@
+import base64
 import os
 import secrets
 import sqlite3
@@ -27,6 +28,12 @@ from .core import (
     now,
     quota_period_start,
 )
+
+
+def profile_title(value):
+    """Encode subscription titles as an ASCII-safe HTTP header value."""
+    encoded = base64.b64encode(str(value or "Subscription").encode("utf-8")).decode("ascii")
+    return f"base64:{encoded}"
 
 
 def create_app():
@@ -653,7 +660,7 @@ def create_app():
             body,
             content_type=content_type,
             headers={
-                "Profile-Title": sub["name"],
+                "Profile-Title": profile_title(sub["name"]),
                 "Profile-Update-Interval": "1",
                 "Content-Disposition": f'inline; filename="{filename}"',
                 "Cache-Control": "no-store",
@@ -728,7 +735,7 @@ def create_app():
             body,
             content_type=content_type,
             headers={
-                "Profile-Title": child["name"],
+                "Profile-Title": profile_title(child["name"]),
                 "Profile-Update-Interval": "1",
                 "Subscription-Userinfo": f"upload=0; download={row['used_bytes']}; total={int(row['quota_gb'] * GIB)}; expire={expire_epoch}",
                 "Content-Disposition": f'inline; filename="{filename}"',
