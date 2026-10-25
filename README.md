@@ -18,7 +18,7 @@
 
 - 全新的 Ubuntu 22.04 或 24.04；
 - root/sudo 权限；
-- 3 个指向服务器的域名，例如：
+- 一个已托管到 Cloudflare 的新域名，例如 `example.com`。安装程序会自动使用：
   - `panel.example.com`：管理后台
   - `sub.example.com`：订阅和兑换页
   - `node.example.com`：VLESS/Trojan WebSocket 节点
@@ -35,13 +35,21 @@ chmod +x install.sh update.sh uninstall.sh
 sudo ./install.sh
 ```
 
-安装程序会询问三个域名和后台密码，自动安装 Caddy、Xray-core、Python 环境、服务与定时任务。留空密码时会生成随机密码。
+安装程序只询问根域名和后台密码，并自动生成 `panel.根域名`、`sub.根域名`、`node.根域名`。随后自动安装 Caddy、Xray-core、Python 环境、服务与定时任务。留空密码时会生成随机密码。
 
 安装完成后访问 `https://你的后台域名`。公开兑换页位于 `https://你的订阅域名/redeem`。
 
 ## Cloudflare DNS
 
-为三个子域名添加指向服务器 IPv4 的 `A` 记录。首次申请证书时请确认 TCP 80/443 可从公网访问。若使用 Cloudflare 代理，请保持 WebSocket 开启，并避免缓存 `/s/*`、`/c/*`、`/redeem`。
+假设新服务器公网 IP 是 `203.0.113.10`，根域名是 `example.com`，在 Cloudflare DNS 添加：
+
+| 类型 | 名称 | 内容 | 代理状态 |
+| --- | --- | --- | --- |
+| A | panel | 203.0.113.10 | 可开启代理 |
+| A | sub | 203.0.113.10 | 可开启代理 |
+| A | node | 203.0.113.10 | 可开启代理（WebSocket） |
+
+也可以先全部设为 DNS only，确认 Caddy 成功签发证书后再开启代理。Cloudflare 的 SSL/TLS 模式建议使用 `Full (strict)`。首次申请证书时请确认 TCP 80/443 可从公网访问，并避免缓存 `/s/*`、`/c/*`、`/redeem`。
 
 ## 更新
 
