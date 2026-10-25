@@ -708,13 +708,16 @@ proxies:
 
 proxy-groups:
   - name: PROXY
-    type: url-test
+    type: fallback
     proxies:
       - {quoted(vless_name)}
       - {quoted(trojan_name)}
     url: https://www.gstatic.com/generate_204
-    interval: 300
-    tolerance: 50
+    interval: 60
+    lazy: true
+    timeout: 10000
+    max-failed-times: 2
+    expected-status: 204
 
 rules:
   - MATCH,PROXY
