@@ -1,0 +1,22 @@
+[Unit]
+Description=SOCKS5 Subscription Control Panel
+After=network-online.target xray.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=proxy-panel
+Group=proxy-panel
+WorkingDirectory=/opt/proxy-panel
+EnvironmentFile=/etc/proxy-panel.env
+ExecStart=/opt/proxy-panel/venv/bin/gunicorn --workers 1 --threads 4 --bind 127.0.0.1:8080 --access-logfile - proxy_panel.app:app
+Restart=always
+RestartSec=3
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/proxy-panel /usr/local/etc/xray
+
+[Install]
+WantedBy=multi-user.target
+

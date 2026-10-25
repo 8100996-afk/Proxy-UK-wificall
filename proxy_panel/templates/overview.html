@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}概览 · Proxy Panel{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>运行概览</h1><p>代理池、订阅和自动检测的当前状态。</p></div></div>
+<div class="stats">
+  <a class="stat" href="{{ url_for('socks_page') }}"><b>{{ socks|length }}</b><span>SOCKS5 / 30</span></a>
+  <a class="stat" href="{{ url_for('socks_page') }}"><b>{{ socks|selectattr('status','equalto','active')|list|length }}</b><span>健康出口</span></a>
+  <a class="stat" href="{{ url_for('subscriptions_page') }}"><b>{{ subs|length }}</b><span>订阅</span></a>
+</div>
+<div class="overview-grid">
+  <section class="card"><div class="section-title"><h2>订阅状态</h2><a href="{{ url_for('subscriptions_page') }}">管理订阅 →</a></div>{% if subs %}<div class="summary-list">{% for sub in subs %}<div><strong>{{ sub.name }}</strong><span class="badge {{ 'active' if sub.status in ('healthy','fallback') else ('warning' if sub.status == 'limited' else 'disabled') }}">{{ {'healthy':'健康','fallback':'服务器兜底','limited':'已限速 10 Mbps','no_exit':'无出口','disabled':'停用','error':'异常','unchecked':'待检测'}.get(sub.status, sub.status) }}</span></div>{% endfor %}</div>{% else %}<p class="empty">尚未创建订阅。</p>{% endif %}</section>
+  <section class="card"><div class="section-title"><h2>最近事件</h2><a href="{{ url_for('settings_page') }}">查看全部 →</a></div><div class="events compact">{% for event in events %}<div><span class="badge {{ event.level }}">{{ event.level }}</span><time>{{ event.created_at|dual_time }}</time><p>{{ event.message }}</p></div>{% else %}<p class="empty">暂无事件。</p>{% endfor %}</div></section>
+</div>
+<section class="card wifi-summary"><div class="section-title"><h2>英国 Wi‑Fi Calling</h2><a href="{{ url_for('wifi_calling_page') }}">详细监控 →</a></div>{% if wifi_latest %}<div class="wifi-cards">{% for item in wifi_latest %}<div><span class="status-dot {{ 'up' if item.ok else 'down' }}"></span><strong>{{ item.carrier }}</strong><b>{{ item.rate_24h }}%</b><small>24 小时连通率</small></div>{% endfor %}</div>{% else %}<p class="empty">等待第一次检测。</p>{% endif %}</section>
+{% endblock %}
+
+

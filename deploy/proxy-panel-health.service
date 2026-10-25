@@ -1,0 +1,12 @@
+[Unit]
+Description=Check SOCKS5 exits and refresh Xray
+After=network-online.target xray.service
+
+[Service]
+Type=oneshot
+User=proxy-panel
+Group=proxy-panel
+WorkingDirectory=/opt/proxy-panel
+EnvironmentFile=/etc/proxy-panel.env
+ExecStart=/opt/proxy-panel/venv/bin/python -m proxy_panel.health
+

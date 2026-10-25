@@ -1,0 +1,21 @@
+[Unit]
+Description=Per-subscription 10 Mbps quota rate limiter
+After=network-online.target
+Before=xray.service
+
+[Service]
+Type=simple
+User=proxy-panel
+Group=proxy-panel
+WorkingDirectory=/opt/proxy-panel
+EnvironmentFile=/etc/proxy-panel.env
+ExecStart=/opt/proxy-panel/venv/bin/python -m proxy_panel.rate_limiter
+Restart=always
+RestartSec=2
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/proxy-panel
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Check UK Wi-Fi Calling gateways through subscription
+After=network-online.target xray.service proxy-panel.service
+
+[Service]
+Type=oneshot
+User=proxy-panel
+Group=proxy-panel
+WorkingDirectory=/opt/proxy-panel
+EnvironmentFile=/etc/proxy-panel.env
+ExecStart=/opt/proxy-panel/venv/bin/python -m proxy_panel.wifi_health
+

@@ -1,0 +1,35 @@
+__PANEL_DOMAIN__ {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+	}
+}
+
+__SUB_DOMAIN__ {
+	encode zstd gzip
+	@subscription path /s/* /c/* /redeem
+	handle @subscription {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		respond "Not found" 404
+	}
+}
+
+__NODE_DOMAIN__ {
+	@vless path /vless*
+	handle @vless {
+		reverse_proxy 127.0.0.1:10001
+	}
+	@trojan path /trojan*
+	handle @trojan {
+		reverse_proxy 127.0.0.1:10002
+	}
+	handle {
+		respond "Not found" 404
+	}
+}

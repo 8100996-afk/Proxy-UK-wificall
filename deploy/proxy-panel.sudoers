@@ -1,0 +1,2 @@
+proxy-panel ALL=(root) NOPASSWD: /bin/systemctl restart xray
+

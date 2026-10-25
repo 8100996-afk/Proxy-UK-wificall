@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}登录 · Proxy Panel{% endblock %}
+{% block content %}
+<section class="login card"><h1>管理员登录</h1><p class="muted">请输入部署时生成的管理密码。</p><form method="post" action="/login"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>密码<input type="password" name="password" required autofocus></label><button type="submit">登录</button></form></section>
+{% endblock %}
+

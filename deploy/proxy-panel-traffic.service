@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect Xray subscription traffic and enforce quotas
+After=xray.service
+
+[Service]
+Type=oneshot
+User=proxy-panel
+Group=proxy-panel
+WorkingDirectory=/opt/proxy-panel
+EnvironmentFile=/etc/proxy-panel.env
+ExecStart=/opt/proxy-panel/venv/bin/python -m proxy_panel.traffic
