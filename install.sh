@@ -7,13 +7,34 @@ if [[ ${EUID} -ne 0 ]]; then
 fi
 
 PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-read -rp "后台域名（如 panel.example.com）: " PANEL_DOMAIN
-read -rp "订阅域名（如 sub.example.com）: " SUB_DOMAIN
-read -rp "节点域名（如 node.example.com）: " NODE_DOMAIN
+PUBLIC_IP=""
+if command -v curl >/dev/null 2>&1; then
+  PUBLIC_IP=$(curl -4fsS --max-time 10 https://api.ipify.org || true)
+fi
+read -rp "请输入你的根域名（如 example.com）: " ROOT_DOMAIN
+PANEL_DOMAIN="panel.$ROOT_DOMAIN"
+SUB_DOMAIN="sub.$ROOT_DOMAIN"
+NODE_DOMAIN="node.$ROOT_DOMAIN"
+
+echo
+echo "请先在 Cloudflare DNS 添加以下 A 记录："
+echo "  panel  -> ${PUBLIC_IP:-这台服务器的公网 IPv4}"
+echo "  sub    -> ${PUBLIC_IP:-这台服务器的公网 IPv4}"
+echo "  node   -> ${PUBLIC_IP:-这台服务器的公网 IPv4}"
+echo
+echo "将使用："
+echo "  后台 https://$PANEL_DOMAIN"
+echo "  订阅 https://$SUB_DOMAIN"
+echo "  节点 $NODE_DOMAIN"
+read -rp "DNS 已添加并确认继续？输入 yes: " DNS_READY
+if [[ $DNS_READY != yes ]]; then
+  echo "已取消。添加 DNS 后重新运行安装脚本。"
+  exit 1
+fi
 read -rsp "后台管理员密码（留空自动生成）: " ADMIN_PASSWORD
 echo
 
-for value in "$PANEL_DOMAIN" "$SUB_DOMAIN" "$NODE_DOMAIN"; do
+for value in "$ROOT_DOMAIN" "$PANEL_DOMAIN" "$SUB_DOMAIN" "$NODE_DOMAIN"; do
   if [[ ! $value =~ ^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
     echo "域名格式不正确：$value"
     exit 1
