@@ -11,7 +11,7 @@ __PANEL_DOMAIN__ {
 
 __SUB_DOMAIN__ {
 	encode zstd gzip
-	@subscription path /s/* /c/* /redeem
+	@subscription path /s/* /c/* /w/* /redeem
 	handle @subscription {
 		reverse_proxy 127.0.0.1:8080
 	}
