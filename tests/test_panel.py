@@ -73,6 +73,11 @@ def test_routes_exit_switch_and_parent_quota(monkeypatch):
         assert b"DST-PORT,500,PROXY" in wifi_profile.data
         assert b"DST-PORT,4500,PROXY" in wifi_profile.data
         assert b"MATCH,DIRECT" in wifi_profile.data
+        shadowrocket_profile = client.get("/w/wifi-test-token?format=shadowrocket")
+        assert shadowrocket_profile.status_code == 200
+        assert b"DST-PORT,500,PROXY" in shadowrocket_profile.data
+        assert b"DST-PORT,4500,PROXY" in shadowrocket_profile.data
+        assert b"FINAL,DIRECT" in shadowrocket_profile.data
         assert client.post(
             f"/wifi-access/{wifi_id}/speed",
             data={"csrf": "test-csrf", "speed_mbps": "50"},

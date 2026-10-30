@@ -21,7 +21,9 @@
       <button class="small" type="button" data-copy="{{ sub_base_url }}/w/{{ account.token }}">复制自动识别</button>
       <button class="small" type="button" data-copy="{{ sub_base_url }}/w/{{ account.token }}?format=clash">复制 Clash</button>
       <button class="small" type="button" data-copy="{{ sub_base_url }}/w/{{ account.token }}?format=base64">复制通用订阅</button>
+      <button class="small primary" type="button" data-copy="{{ sub_base_url }}/w/{{ account.token }}?format=shadowrocket">复制小火箭分流规则</button>
     </div>
+    <div class="split-help"><b>保持用户自己的 IP</b><span>Clash：直接使用“复制 Clash”；小火箭：先导入通用订阅，再把“小火箭分流规则”加入「配置」，全局路由选择「配置」。不要选择全局代理。</span><small>只有 UDP 500/4500 → 英国专线；其余全部 DIRECT，不会断普通网络。</small></div>
     <dl class="wifi-access-meta"><div><dt>累计转发</dt><dd>{{ account.used_bytes|traffic_gb }} GB</dd></div><div><dt>创建时间</dt><dd>{{ account.created_at|dual_time }}</dd></div></dl>
     <form method="post" action="/wifi-access/{{ account.id }}/speed" class="inline-fields compact wifi-speed-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>专线总速度 Mbps<input name="speed_mbps" type="number" min="5" max="200" value="{{ account.speed_mbps }}" required></label><button class="small" type="submit">保存速度</button><small>修改后约 5 秒热更新，不断开连接</small></form>
     <div class="actions foot">

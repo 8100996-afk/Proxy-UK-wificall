@@ -208,6 +208,9 @@ nav a.current {
 .wifi-access-meta dd {margin:0;text-align:right}
 .wifi-speed-form {margin-top:14px!important;align-items:end}
 .wifi-speed-form small {color:var(--muted);align-self:center}
+.split-help {display:grid;gap:5px;margin-top:12px;padding:12px;border:1px solid #315a4b;border-radius:10px;background:#0c211a}
+.split-help b {color:#65efb2}
+.split-help span,.split-help small {color:var(--muted)}
 @media(max-width:850px){.wifi-access-form{grid-template-columns:1fr}.wifi-access-form button{width:100%}}
 
 .carrier-title {

@@ -254,8 +254,10 @@ async def udp_associate(client_reader, client_writer, rate_buckets):
     loop = asyncio.get_running_loop()
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_socket.setblocking(False)
-    udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
-    udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
+    # Allow short IKE/ESP registration bursts without adding avoidable loss.
+    # The host caps these buffers at 4 MiB, so this cannot grow without bound.
+    udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 << 20)
+    udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 << 20)
     udp_socket.bind(("127.0.0.1", 0))
     bound_host, bound_port = udp_socket.getsockname()
     client_writer.write(

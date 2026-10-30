@@ -1021,6 +1021,27 @@ def create_app():
             return "subscription not found", 404
         requested_format = request.args.get("format", "").lower()
         user_agent = request.headers.get("User-Agent", "").lower()
+        if requested_format in {"shadowrocket", "sr", "conf"}:
+            body = """[General]
+bypass-system = false
+dns-server = system
+ipv6 = true
+
+[Rule]
+DST-PORT,500,PROXY
+DST-PORT,4500,PROXY
+FINAL,DIRECT
+"""
+            return Response(
+                body,
+                content_type="text/plain; charset=utf-8",
+                headers={
+                    "Profile-Title": profile_title(f"{account['name']}-WiFi-Call-Split"),
+                    "Content-Disposition": 'inline; filename="wifi-call-shadowrocket.conf"',
+                    "Cache-Control": "no-store",
+                    "X-WiFi-Call-Policy": "udp-500-4500-proxy; final=direct",
+                },
+            )
         wants_clash = requested_format in {"clash", "mihomo", "yaml"} or (
             not requested_format
             and any(name in user_agent for name in ("clash", "mihomo", "verge", "stash"))
