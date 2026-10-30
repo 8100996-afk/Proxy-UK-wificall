@@ -81,40 +81,56 @@ def account_info(username):
         if username.startswith("server-sub-"):
             sub_id = int(username[11:])
             row = conn.execute(
-                "SELECT id FROM subscriptions WHERE id=? AND enabled=1", (sub_id,)
+                "SELECT id,quota_exceeded FROM subscriptions WHERE id=? AND enabled=1", (sub_id,)
             ).fetchone()
             speed = max(1, int(get_setting("server_traffic_limit_mbps") or 10))
-            return (sub_id, [("server-global", speed)]) if row else None
+            if not row:
+                return None
+            specs = [("server-global", speed)]
+            if row["quota_exceeded"]:
+                specs.append((f"parent-{sub_id}", 10))
+            return sub_id, specs
         if username.startswith("server-child-"):
             child_id = int(username[13:])
             row = conn.execute(
-                """SELECT p.parent_subscription_id,a.speed_mbps FROM activation_codes a
+                """SELECT p.parent_subscription_id,a.speed_mbps,s.quota_exceeded FROM activation_codes a
                    JOIN secondary_plans p ON p.id=a.plan_id
-                   WHERE a.id=? AND a.status='active' AND a.quota_exceeded=0 AND a.expires_at>?""",
+                   JOIN subscriptions s ON s.id=p.parent_subscription_id
+                   WHERE a.id=? AND a.status='active' AND a.quota_exceeded=0
+                     AND a.expires_at>? AND s.enabled=1""",
                 (child_id, time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())),
             ).fetchone()
             if not row:
                 return None
             server_speed = max(1, int(get_setting("server_traffic_limit_mbps") or 10))
-            return row["parent_subscription_id"], [
-                ("server-global", server_speed),
-                (f"child-{child_id}", int(row["speed_mbps"])),
-            ]
+            specs = [("server-global", server_speed)]
+            if row["quota_exceeded"]:
+                specs.append((f"parent-{row['parent_subscription_id']}", 10))
+            specs.append((f"child-{child_id}", int(row["speed_mbps"])))
+            return row["parent_subscription_id"], specs
         if username.startswith("sub-"):
             sub_id = int(username[4:])
             row = conn.execute(
                 "SELECT id FROM subscriptions WHERE id=? AND enabled=1", (sub_id,)
             ).fetchone()
-            return (sub_id, [(username, 10)]) if row else None
+            return (sub_id, [(f"parent-{sub_id}", 10)]) if row else None
         if username.startswith("child-"):
             child_id = int(username[6:])
             row = conn.execute(
-                """SELECT p.parent_subscription_id,a.speed_mbps FROM activation_codes a
+                """SELECT p.parent_subscription_id,a.speed_mbps,s.quota_exceeded FROM activation_codes a
                    JOIN secondary_plans p ON p.id=a.plan_id
-                   WHERE a.id=? AND a.status='active' AND a.quota_exceeded=0 AND a.expires_at>?""",
+                   JOIN subscriptions s ON s.id=p.parent_subscription_id
+                   WHERE a.id=? AND a.status='active' AND a.quota_exceeded=0
+                     AND a.expires_at>? AND s.enabled=1""",
                 (child_id, time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())),
             ).fetchone()
-            return (row["parent_subscription_id"], [(username, row["speed_mbps"])]) if row else None
+            if not row:
+                return None
+            specs = []
+            if row["quota_exceeded"]:
+                specs.append((f"parent-{row['parent_subscription_id']}", 10))
+            specs.append((username, int(row["speed_mbps"])))
+            return row["parent_subscription_id"], specs
     return None
 
 

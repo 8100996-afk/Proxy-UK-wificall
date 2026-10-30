@@ -1,0 +1,10 @@
+[Unit]
+Description=Create a daily Proxy Panel backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 Asia/Singapore
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

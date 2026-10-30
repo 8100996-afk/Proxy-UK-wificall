@@ -12,4 +12,6 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements.txt
       - run: python -m compileall -q proxy_panel
+      - run: pip install pytest
+      - run: pytest -q
 

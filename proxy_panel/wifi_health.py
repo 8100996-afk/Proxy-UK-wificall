@@ -174,19 +174,16 @@ def start_xray_client(uuid_value, socks_port):
                     "encryption": "none",
                 },
                 "streamSettings": {
-                    "method": "websocket",
+                    "method": "xhttp",
                     "security": "tls",
-                    "tlsSettings": {"serverName": os.environ.get("NODE_DOMAIN", "node.example.com")},
-                    "wsSettings": {
-                        "path": "/vless",
-                        "host": os.environ.get("NODE_DOMAIN", "node.example.com"),
+                    "tlsSettings": {
+                        "serverName": os.environ.get("NODE_DOMAIN", "node.example.com"),
+                        "alpn": ["h3"],
                     },
-                },
-                "mux": {
-                    "enabled": True,
-                    "concurrency": 8,
-                    "xudpConcurrency": 16,
-                    "xudpProxyUDP443": "allow",
+                    "xhttpSettings": {
+                        "path": "/xhttp",
+                        "mode": "auto",
+                    },
                 },
             }
         ],

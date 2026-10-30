@@ -457,7 +457,7 @@ def xray_config():
                FROM activation_codes a JOIN secondary_plans p ON p.id=a.plan_id
                JOIN subscriptions s ON s.id=p.parent_subscription_id
                WHERE a.status='active' AND a.quota_exceeded=0 AND a.expires_at>?
-                 AND s.enabled=1 AND s.quota_exceeded=0 ORDER BY a.id""",
+                 AND s.enabled=1 ORDER BY a.id""",
             (now(),),
         ).fetchall()
         socks_rows = conn.execute("SELECT * FROM socks WHERE status='active' ORDER BY id").fetchall()
@@ -487,6 +487,8 @@ def xray_config():
         }
     ]
     balancers = []
+    parent_routes = {}
+    parent_limited = {sub["id"]: bool(sub["quota_exceeded"]) for sub in subs}
     limited_subs = []
     limited_children = []
     for sub in subs:
@@ -499,12 +501,17 @@ def xray_config():
             rules.append(
                 {"type": "field", "network": "tcp", "user": [email], "outboundTag": f"limited-sub-{sub['id']}"}
             )
+            # The local limiter handles TCP.  Block non-Wi-Fi-Calling UDP once
+            # the shared parent quota is exhausted so UDP cannot bypass it.
+            rules.append(
+                {"type": "field", "network": "udp", "user": [email], "outboundTag": "blocked"}
+            )
         ids = assigned.get(sub["id"], [])[:3]
         if len(ids) == 1:
             # A single selected SOCKS5 is pinned directly.  This avoids the
             # observatory warm-up window falling back to the server IP after a
             # user explicitly switches exits.
-            rules.append({"type": "field", "user": [email], "outboundTag": f"socks-{ids[0]}"})
+            parent_routes[sub["id"]] = {"outboundTag": f"socks-{ids[0]}"}
         elif ids:
             tag = f"balancer-sub-{sub['id']}"
             # Prefer the lowest-latency healthy exit.  This avoids sending every
@@ -517,7 +524,6 @@ def xray_config():
                     999999,
                 ),
             )
-            fastest_id = ranked_ids[0]
             balancers.append(
                 {
                     "tag": tag,
@@ -542,9 +548,10 @@ def xray_config():
                     },
                 }
             )
-            rules.append({"type": "field", "user": [email], "balancerTag": tag})
+            parent_routes[sub["id"]] = {"balancerTag": tag}
         else:
-            rules.append({"type": "field", "user": [email], "outboundTag": "uk-direct"})
+            parent_routes[sub["id"]] = {"outboundTag": "uk-direct"}
+        rules.append({"type": "field", "user": [email], **parent_routes[sub["id"]]})
 
     for child in children:
         email = f"child-{child['id']}@proxy.local"
@@ -555,6 +562,18 @@ def xray_config():
         rules.append(
             {"type": "field", "network": "tcp", "user": [email], "outboundTag": f"limited-child-{child['id']}"}
         )
+        if parent_limited.get(child["parent_subscription_id"]):
+            rules.append(
+                {"type": "field", "network": "udp", "user": [email], "outboundTag": "blocked"}
+            )
+        else:
+            # The TCP limiter does not implement SOCKS5 UDP ASSOCIATE.  Route
+            # child UDP through the same selected parent exit so XUDP works;
+            # UDP 500/4500 was already captured by the first London rule.
+            rules.append({
+                "type": "field", "network": "udp", "user": [email],
+                **parent_routes.get(child["parent_subscription_id"], {"outboundTag": "uk-direct"}),
+            })
 
     if server_traffic["exceeded"]:
         global_rules = []
@@ -567,10 +586,18 @@ def xray_config():
                     "type": "field", "network": "tcp", "user": [email],
                     "outboundTag": f"server-limit-sub-{sub_id}",
                 })
+                global_rules.append({
+                    "type": "field", "network": "udp", "user": [email],
+                    "outboundTag": "blocked",
+                })
             for child_id, email in child_emails:
                 global_rules.append({
                     "type": "field", "network": "tcp", "user": [email],
                     "outboundTag": f"server-limit-child-{child_id}",
+                })
+                global_rules.append({
+                    "type": "field", "network": "udp", "user": [email],
+                    "outboundTag": "blocked",
                 })
         # Keep Wi-Fi Calling's London UDP route first; enforce the server-wide
         # policy before every per-account route.
@@ -767,20 +794,25 @@ def subscription_text(sub):
     host = NODE_DOMAIN
     encoded_host = urllib.parse.quote(host, safe="")
     tls = f"security=tls&allowInsecure=0&host={encoded_host}&sni={encoded_host}&fp=chrome"
-    xhttp = (
+    xhttp_h3 = (
         f"vless://{sub['vless_uuid']}@{host}:443?encryption=none&{tls}"
-        f"&type=xhttp&path=%2Fxhttp&mode=auto&alpn=h2&packetEncoding=xudp#{label}-VLESS-XHTTP"
+        f"&type=xhttp&path=%2Fxhttp&mode=auto&alpn=h3&packetEncoding=xudp#{label}-VLESS-XHTTP-H3"
+    )
+    xhttp_h2 = (
+        f"vless://{sub['vless_uuid']}@{host}:443?encryption=none&{tls}"
+        f"&type=xhttp&path=%2Fxhttp&mode=auto&alpn=h2&packetEncoding=xudp#{label}-VLESS-XHTTP-H2"
     )
     vless = f"vless://{sub['vless_uuid']}@{host}:443?encryption=none&{tls}&type=ws&path=%2Fvless&packetEncoding=xudp#{label}-VLESS-WS"
     trojan = f"trojan://{urllib.parse.quote(sub['trojan_password'], safe='')}@{host}:443?{tls}&type=ws&path=%2Ftrojan#{label}-Trojan-WS"
-    raw = f"{xhttp}\n{vless}\n{trojan}\n"
+    raw = f"{xhttp_h3}\n{xhttp_h2}\n{vless}\n{trojan}\n"
     return base64.b64encode(raw.encode()).decode()
 
 
 def clash_subscription_text(sub):
     """Return a Mihomo/Clash Meta profile for Clash Verge and compatible apps."""
     host = NODE_DOMAIN
-    xhttp_name = f"{sub['name']}-VLESS-XHTTP"
+    xhttp_h3_name = f"{sub['name']}-VLESS-XHTTP-H3"
+    xhttp_h2_name = f"{sub['name']}-VLESS-XHTTP-H2"
     vless_name = f"{sub['name']}-VLESS-WS"
     trojan_name = f"{sub['name']}-Trojan-WS"
 
@@ -800,7 +832,24 @@ find-process-mode: strict
 global-client-fingerprint: chrome
 
 proxies:
-  - name: {quoted(xhttp_name)}
+  - name: {quoted(xhttp_h3_name)}
+    type: vless
+    server: {quoted(host)}
+    port: 443
+    uuid: {quoted(sub['vless_uuid'])}
+    network: xhttp
+    tls: true
+    udp: true
+    servername: {quoted(host)}
+    client-fingerprint: chrome
+    packet-encoding: xudp
+    alpn:
+      - h3
+    xhttp-opts:
+      path: /xhttp
+      host: {quoted(host)}
+      mode: auto
+  - name: {quoted(xhttp_h2_name)}
     type: vless
     server: {quoted(host)}
     port: 443
@@ -852,7 +901,8 @@ proxy-groups:
   - name: PROXY
     type: fallback
     proxies:
-      - {quoted(xhttp_name)}
+      - {quoted(xhttp_h3_name)}
+      - {quoted(xhttp_h2_name)}
       - {quoted(vless_name)}
       - {quoted(trojan_name)}
     url: https://www.gstatic.com/generate_204

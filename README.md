@@ -6,12 +6,13 @@
 
 - 最多管理 30 个 SOCKS5 出口，定时检测、故障停用与自动清理；
 - 每个主订阅通过弹窗选择最多 3 个出口；单出口直接固定，多出口按实测延迟轮换，全部失效时回落服务器公网 IP；
-- 生成优先使用 VLESS XHTTP（TLS/HTTP2）的节点，并保留 VLESS/Trojan WebSocket 兼容回退、Base64 通用订阅和 Clash/Mihomo YAML；
+- 生成优先使用 VLESS XHTTP（QUIC/HTTP3）的节点，并保留 XHTTP/HTTP2、VLESS/Trojan WebSocket 兼容回退、Base64 通用订阅和 Clash/Mihomo YAML；
 - EE、Three UK、Vodafone UK 的 UDP 500/4500 健康监控；
 - 主订阅与三级账号共享每月额度，显示实际用量和已分配额度，额度不足时阻止超额生成激活码；
 - 服务器总出口流量默认 2 TB，可修改阈值并选择达量断开或全局限速；
 - 二级订阅、10–100 Mbps 独立限速、批量激活码、前后四位搜索、批量复制/删除、网页兑换与凭码找回；
 - 激活后开始计时，到期自动物理删除；
+- 每天自动备份数据库和加密密钥，默认保留最近 14 天；
 - 英国和新加坡双时区显示；
 - Caddy 自动 HTTPS、systemd 服务与定时任务。
 
@@ -66,6 +67,7 @@ sudo ./update.sh
 - 配置密钥：`/etc/proxy-panel.env`
 - SQLite 数据库：`/var/lib/proxy-panel/panel.db`
 - Xray 配置：`/usr/local/etc/xray/config.json`
+- 每日备份：`/var/backups/proxy-panel/YYYY-MM-DD/`
 
 备份时必须同时加密保存环境文件和数据库，否则无法恢复已加密的 SOCKS5 密码。
 

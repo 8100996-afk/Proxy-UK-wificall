@@ -55,6 +55,7 @@ fi
 
 id proxy-panel >/dev/null 2>&1 || useradd --system --home /opt/proxy-panel --shell /usr/sbin/nologin proxy-panel
 install -d -o proxy-panel -g proxy-panel -m 0750 /var/lib/proxy-panel
+install -d -o root -g root -m 0700 /var/backups/proxy-panel
 install -d -o root -g proxy-panel -m 0775 /usr/local/etc/xray
 install -d -o root -g root -m 0755 /opt/proxy-panel
 rsync -a --delete --exclude='.git' --exclude='venv' --exclude='__pycache__' "$PROJECT_DIR/" /opt/proxy-panel/
@@ -94,7 +95,7 @@ caddy validate --config /etc/caddy/Caddyfile
 
 systemctl daemon-reload
 systemctl enable --now xray caddy proxy-panel-rate-limiter.service proxy-panel.service
-systemctl enable --now proxy-panel-health.timer proxy-panel-traffic.timer wifi-call-health.timer
+systemctl enable --now proxy-panel-health.timer proxy-panel-traffic.timer wifi-call-health.timer proxy-panel-backup.timer
 
 set -a
 source /etc/proxy-panel.env

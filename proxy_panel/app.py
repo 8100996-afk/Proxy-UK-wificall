@@ -4,6 +4,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from zoneinfo import ZoneInfo
@@ -217,9 +218,10 @@ def create_app():
     @app.post("/server-traffic")
     @login_required
     def server_traffic_update():
+        current_limit = get_setting("server_traffic_limit_mbps") or "10"
         try:
             quota_tb = float(request.form.get("quota_tb", "2"))
-            limit_mbps = int(request.form.get("limit_mbps", "10"))
+            limit_mbps = int(request.form.get("limit_mbps") or current_limit)
         except ValueError:
             quota_tb, limit_mbps = 0, 0
         action = request.form.get("action", "limit")
@@ -722,22 +724,39 @@ def create_app():
             return redirect(url_for("subscriptions_page"))
         tested = []
         with db() as conn:
+            if not conn.execute("SELECT 1 FROM subscriptions WHERE id=?", (sub_id,)).fetchone():
+                flash("主订阅不存在或已被删除", "error")
+                return redirect(url_for("subscriptions_page"))
             rows = conn.execute(
-                f"SELECT * FROM socks WHERE id IN ({','.join('?' for _ in sock_ids)})" if sock_ids else "SELECT * FROM socks WHERE 0",
+                f"SELECT * FROM socks WHERE status='active' AND id IN ({','.join('?' for _ in sock_ids)})" if sock_ids else "SELECT * FROM socks WHERE 0",
                 numeric_sock_ids,
             ).fetchall()
-        for row in rows:
-            ok, exit_ip, latency, error = test_socks(
-                row["host"], row["port"], decrypt(row["username_enc"]), decrypt(row["password_enc"]), timeout=10
+        rows_by_id = {row["id"]: row for row in rows}
+        if any(socks_id not in rows_by_id for socks_id in numeric_sock_ids):
+            flash("出口选择无效、已停用或已经不存在", "error")
+            return redirect(url_for("subscriptions_page"))
+
+        def probe(row):
+            result = test_socks(
+                row["host"], row["port"], decrypt(row["username_enc"]),
+                decrypt(row["password_enc"]), timeout=10,
             )
-            if not ok:
-                flash(f"出口 {row['name']} 实测失败，未保存：{error}", "error")
-                return redirect(url_for("subscriptions_page"))
-            tested.append((row["id"], exit_ip, latency))
+            return row, result
+
+        probe_results = {}
+        if rows:
+            with ThreadPoolExecutor(max_workers=len(rows), thread_name_prefix="exit-probe") as executor:
+                futures = [executor.submit(probe, row) for row in rows]
+                for future in as_completed(futures):
+                    row, (ok, exit_ip, latency, error) = future.result()
+                    if not ok:
+                        flash(f"出口 {row['name']} 实测失败，未保存：{error}", "error")
+                        return redirect(url_for("subscriptions_page"))
+                    probe_results[row["id"]] = (exit_ip, latency)
+        tested = [(socks_id, *probe_results[socks_id]) for socks_id in numeric_sock_ids]
         with db() as conn:
-            valid = {str(row[0]) for row in tested}
-            if any(sid not in valid for sid in sock_ids):
-                flash("出口选择无效或已经不存在", "error")
+            if not conn.execute("SELECT 1 FROM subscriptions WHERE id=?", (sub_id,)).fetchone():
+                flash("主订阅在检测期间已被删除，未保存出口", "error")
                 return redirect(url_for("subscriptions_page"))
             for socks_id, exit_ip, latency in tested:
                 conn.execute(
@@ -759,10 +778,13 @@ def create_app():
     def subscription_reset(sub_id):
         token, vless_uuid, trojan_password = new_subscription_values()
         with db() as conn:
-            conn.execute(
+            updated = conn.execute(
                 "UPDATE subscriptions SET token=?,vless_uuid=?,trojan_password=?,updated_at=? WHERE id=?",
                 (token, vless_uuid, trojan_password, now(), sub_id),
-            )
+            ).rowcount
+        if not updated:
+            flash("订阅不存在", "error")
+            return redirect(url_for("subscriptions_page"))
         schedule_rebuild()
         add_event("warning", f"重置订阅 #{sub_id}，旧链接已失效")
         flash("订阅凭据已重置，旧链接立即失效", "success")
@@ -832,7 +854,10 @@ def create_app():
     @login_required
     def subscription_toggle(sub_id):
         with db() as conn:
-            conn.execute("UPDATE subscriptions SET enabled=1-enabled,updated_at=? WHERE id=?", (now(), sub_id))
+            updated = conn.execute("UPDATE subscriptions SET enabled=1-enabled,updated_at=? WHERE id=?", (now(), sub_id)).rowcount
+        if not updated:
+            flash("订阅不存在", "error")
+            return redirect(url_for("subscriptions_page"))
         schedule_rebuild()
         flash("订阅状态已更新", "success")
         return redirect(url_for("subscriptions_page"))
