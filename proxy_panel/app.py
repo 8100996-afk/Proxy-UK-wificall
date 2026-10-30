@@ -1,4 +1,5 @@
 import base64
+import math
 import os
 import secrets
 import sqlite3
@@ -1072,7 +1073,31 @@ FINAL,DIRECT
                    JOIN subscriptions s ON s.id=p.parent_subscription_id WHERE a.code=?""",
                 (code,),
             ).fetchone()
-        return row
+        if not row:
+            return None
+        result = dict(row)
+        total_bytes = max(1, int(float(result["quota_gb"]) * GIB))
+        used_bytes = max(0, int(result["used_bytes"] or 0))
+        remaining_bytes = max(0, total_bytes - used_bytes)
+        result["total_bytes"] = total_bytes
+        result["remaining_bytes"] = remaining_bytes
+        result["used_percent"] = min(100, round(used_bytes * 100 / total_bytes, 1))
+        result["remaining_percent"] = min(100, round(remaining_bytes * 100 / total_bytes, 1))
+        result["is_expired"] = False
+        result["validity_remaining_percent"] = 100
+        result["remaining_days"] = int(result["valid_days"])
+        if result["expires_at"]:
+            current = datetime.now(timezone.utc)
+            expires = datetime.fromisoformat(result["expires_at"].replace("Z", "+00:00"))
+            activated = datetime.fromisoformat(result["activated_at"].replace("Z", "+00:00"))
+            remaining_seconds = max(0, (expires - current).total_seconds())
+            total_seconds = max(1, (expires - activated).total_seconds())
+            result["is_expired"] = remaining_seconds <= 0
+            result["remaining_days"] = max(0, math.ceil(remaining_seconds / 86400))
+            result["validity_remaining_percent"] = min(
+                100, round(remaining_seconds * 100 / total_seconds, 1)
+            )
+        return result
 
     @app.get("/redeem")
     def redeem_page():

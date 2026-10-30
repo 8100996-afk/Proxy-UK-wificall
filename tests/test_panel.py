@@ -78,6 +78,10 @@ def test_routes_exit_switch_and_parent_quota(monkeypatch):
         assert b"DST-PORT,500,PROXY" in shadowrocket_profile.data
         assert b"DST-PORT,4500,PROXY" in shadowrocket_profile.data
         assert b"FINAL,DIRECT" in shadowrocket_profile.data
+        redeem_view = client.get("/redeem?code=AAAA-BBBB-CCCC-DDDD")
+        assert redeem_view.status_code == 200
+        assert "剩余流量" in redeem_view.get_data(as_text=True)
+        assert 'role="progressbar"' in redeem_view.get_data(as_text=True)
         assert client.post(
             f"/wifi-access/{wifi_id}/speed",
             data={"csrf": "test-csrf", "speed_mbps": "50"},

@@ -1,11 +1,37 @@
-{% extends "base.html" %}{% block title %}激活订阅{% endblock %}{% block content %}
-<div class="redeem-page"><div class="redeem-brand"><div class="redeem-logo">M</div><div><strong>MAILO CONNECT</strong><span>安全订阅中心</span></div></div>
-<section class="redeem-hero"><span class="eyebrow">PRIVATE ACCESS</span><h1>激活你的专属订阅</h1><p>输入激活码，套餐将在兑换成功的这一刻开始计时。</p></section>
-<section class="redeem-card"><div class="redeem-tabs"><button type="button" class="active" data-tab="activate">兑换激活码</button><button type="button" data-tab="lookup">找回订阅</button></div>
-<div class="redeem-pane active" id="activate"><form method="post" action="/redeem"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>激活码</label><div class="code-entry"><input name="code" value="{{ code }}" autocomplete="off" spellcheck="false" required placeholder="XXXX-XXXX-XXXX-XXXX"><button type="submit">立即激活</button></div><small>有效期从首次成功兑换开始，未兑换不会计时。</small></form></div>
-<div class="redeem-pane" id="lookup"><form method="get" action="/redeem"><label>原激活码</label><div class="code-entry"><input name="code" value="{{ code }}" autocomplete="off" spellcheck="false" required placeholder="输入激活码找回订阅"><button type="submit">查询订阅</button></div><small>无需登录，使用原激活码即可再次查看订阅资料。</small></form></div>
-{% if error %}<div class="redeem-alert">{{ error }}</div>{% endif %}
-{% if searched and result %}<div class="subscription-result"><div class="result-head"><div><span>套餐</span><h2>{{ result.plan_name }}</h2></div><span class="status-pill {{ 'pending' if result.status == 'unused' else 'online' }}">{{ '等待兑换' if result.status == 'unused' else ('流量已用完' if result.quota_exceeded else '已激活') }}</span></div><div class="result-metrics"><div><span>速度</span><b>{{ result.speed_mbps }}</b><small>Mbps</small></div><div><span>总流量</span><b>{{ '%g'|format(result.quota_gb) }}</b><small>GB</small></div><div><span>有效期</span><b>{{ result.valid_days }}</b><small>天</small></div></div>{% if result.expires_at %}<div class="expiry-line"><span>到期时间</span><strong>{{ result.expires_at|dual_time }}</strong></div>{% endif %}{% if result.status == 'active' and not result.quota_exceeded %}<div class="subscription-link"><span>订阅地址</span><code>{{ sub_base_url }}/c/{{ result.token }}</code></div><div class="result-actions"><button type="button" onclick="navigator.clipboard.writeText('{{ sub_base_url }}/c/{{ result.token }}');this.textContent='复制成功 ✓'">复制通用订阅</button><button class="secondary" type="button" onclick="navigator.clipboard.writeText('{{ sub_base_url }}/c/{{ result.token }}?format=clash');this.textContent='复制成功 ✓'">复制 Clash</button></div>{% endif %}</div>{% elif searched and not error %}<div class="redeem-alert">激活码不存在或已经到期删除</div>{% endif %}
-</section><div class="redeem-trust"><span>🔒 TLS 加密传输</span><span>◷ 到期自动销毁</span><span>◇ 独立账号</span></div></div>
-<script>document.querySelectorAll('.redeem-tabs button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.redeem-tabs button,.redeem-pane').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById(b.dataset.tab).classList.add('active');}));{% if searched and not activated %}document.querySelector('[data-tab="lookup"]')?.click();{% endif %}</script>
+{% extends "base.html" %}
+{% block title %}激活订阅 · MAILO ACCESS{% endblock %}
+{% block content %}
+<div class="redeem-page">
+  <div class="redeem-brand"><div class="redeem-logo">M</div><div><strong>MAILO ACCESS</strong><span>订阅激活中心</span></div></div>
+  <section class="redeem-hero"><span class="eyebrow">SECURE SUBSCRIPTION</span><h1>兑换你的专属订阅</h1><p>激活后立即生成独立账号，流量、速度和有效期一眼看清。</p></section>
+  <section class="redeem-card">
+    <div class="redeem-tabs"><button type="button" class="active" data-tab="activate"><span>01</span>兑换激活码</button><button type="button" data-tab="lookup"><span>02</span>找回订阅</button></div>
+    <div class="redeem-pane active" id="activate"><form method="post" action="/redeem"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>输入 16 位激活码</label><div class="code-entry"><input name="code" value="{{ code }}" autocomplete="off" spellcheck="false" required placeholder="XXXX-XXXX-XXXX-XXXX"><button type="submit">立即兑换</button></div><small>有效期从首次兑换成功开始；未兑换的激活码不会计时。</small></form></div>
+    <div class="redeem-pane" id="lookup"><form method="get" action="/redeem"><label>输入原激活码</label><div class="code-entry"><input name="code" value="{{ code }}" autocomplete="off" spellcheck="false" required placeholder="用原激活码找回订阅"><button type="submit">查询账号</button></div><small>无需登录，原激活码就是你的找回凭证，请妥善保存。</small></form></div>
+    {% if error %}<div class="redeem-alert"><b>没有找到</b><span>{{ error }}</span></div>{% endif %}
+    {% if searched and result %}
+    <div class="subscription-result">
+      {% if activated %}<div class="success-banner"><span>✓</span><div><b>兑换成功</b><small>独立订阅已经生成并开始计时</small></div></div>{% endif %}
+      <div class="result-head"><div><span>当前套餐</span><h2>{{ result.plan_name }}</h2><small>关联主订阅 · {{ result.parent_name }}</small></div><span class="status-pill {{ 'pending' if result.status == 'unused' else ('offline' if result.quota_exceeded or result.is_expired else 'online') }}">{{ '等待兑换' if result.status == 'unused' else ('已到期' if result.is_expired else ('流量已用完' if result.quota_exceeded else '使用中')) }}</span></div>
+      <div class="result-metrics"><div><span>专线速度</span><b>{{ result.speed_mbps }}</b><small>Mbps</small></div><div><span>套餐流量</span><b>{{ '%g'|format(result.quota_gb) }}</b><small>GB</small></div><div><span>有效时间</span><b>{{ result.valid_days }}</b><small>天</small></div></div>
+      <div class="quota-panel">
+        <div class="quota-title"><div><span>剩余流量</span><strong>{{ result.remaining_bytes|traffic_gb }} <small>GB</small></strong></div><b>{{ result.remaining_percent }}%</b></div>
+        <div class="quota-track" role="progressbar" aria-label="剩余流量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ result.remaining_percent }}"><i style="width:{{ result.remaining_percent }}%"></i></div>
+        <div class="quota-legend"><span>已用 {{ result.used_bytes|traffic_gb }} GB</span><span>总计 {{ '%g'|format(result.quota_gb) }} GB</span></div>
+      </div>
+      {% if result.expires_at %}<div class="validity-panel"><div><span>剩余有效期</span><b>{{ result.remaining_days }} 天</b></div><div class="validity-track"><i style="width:{{ result.validity_remaining_percent }}%"></i></div><small>{{ result.expires_at|dual_time }} 到期</small></div>{% else %}<div class="validity-panel pending"><div><span>有效期尚未开始</span><b>兑换后 {{ result.valid_days }} 天</b></div><small>点击“立即兑换”后才开始倒计时</small></div>{% endif %}
+      {% if result.status == 'active' and not result.quota_exceeded and not result.is_expired %}
+      <div class="subscription-link"><div><span>你的订阅地址</span><small>支持自动识别、Clash 与通用订阅</small></div><code>{{ sub_base_url }}/c/{{ result.token }}</code></div>
+      <div class="result-actions"><button type="button" data-copy="{{ sub_base_url }}/c/{{ result.token }}">复制自动订阅</button><button class="secondary" type="button" data-copy="{{ sub_base_url }}/c/{{ result.token }}?format=clash">复制 Clash</button><button class="secondary" type="button" data-copy="{{ sub_base_url }}/c/{{ result.token }}?format=base64">复制通用订阅</button></div>
+      {% elif result.status == 'unused' %}<div class="pending-tip">这个激活码还没有兑换。切回“兑换激活码”并点击立即兑换，即可生成订阅。</div>{% endif %}
+    </div>
+    {% elif searched and not error %}<div class="redeem-alert"><b>无法查询</b><span>激活码不存在或已经到期自动删除。</span></div>{% endif %}
+  </section>
+  <div class="redeem-trust"><span><i>✓</i>TLS 加密传输</span><span><i>✓</i>独立账号凭据</span><span><i>✓</i>到期自动销毁</span></div>
+</div>
 {% endblock %}
+{% block scripts %}<script>
+document.querySelectorAll('.redeem-tabs button').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.redeem-tabs button,.redeem-pane').forEach(item=>item.classList.remove('active'));button.classList.add('active');document.getElementById(button.dataset.tab).classList.add('active');}));
+{% if searched and not activated %}document.querySelector('[data-tab="lookup"]')?.click();{% endif %}
+document.querySelectorAll('[data-copy]').forEach(button=>button.addEventListener('click',async()=>{await navigator.clipboard.writeText(button.dataset.copy);button.textContent='已复制 ✓';}));
+</script>{% endblock %}
