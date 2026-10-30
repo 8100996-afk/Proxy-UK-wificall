@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}概览 · Proxy Panel{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>运行概览</h1><p>代理池、订阅和自动检测的当前状态。</p></div><aside class="server-meter compact"><div><span>服务器本月总流量</span><b>{{ server_traffic.used_bytes|traffic_tb }} / {{ '%g'|format(server_traffic.quota_tb) }} TB</b></div><progress max="{{ server_traffic.quota_bytes }}" value="{{ server_traffic.used_bytes }}"></progress><small>{{ server_traffic.percent }}% · 达到后{{ '断开代理' if server_traffic.action == 'disconnect' else '限速 ' ~ server_traffic.limit_mbps ~ ' Mbps' }}</small></aside></div>
+<div class="page-head"><div><h1>运行概览</h1><p>代理池、订阅和自动检测的当前状态。</p></div><aside class="server-meter compact editable"><div><span>服务器本月总流量</span><b>{{ server_traffic.used_bytes|traffic_tb }} / {{ '%g'|format(server_traffic.quota_tb) }} TB</b></div><progress max="{{ server_traffic.quota_bytes }}" value="{{ server_traffic.used_bytes }}"></progress><small>{{ server_traffic.percent }}% · 每月 1 日（新加坡时间）清零</small><form method="post" action="/server-traffic" class="meter-edit-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="dashboard"><label>总额度 TB<input name="quota_tb" type="number" min="0.01" max="10000" step="0.01" value="{{ '%g'|format(server_traffic.quota_tb) }}" required></label><label>达到后<select name="action" data-traffic-action><option value="limit" {{ 'selected' if server_traffic.action == 'limit' else '' }}>限速</option><option value="disconnect" {{ 'selected' if server_traffic.action == 'disconnect' else '' }}>断开代理</option></select></label><label data-limit-field>限速 Mbps<input name="limit_mbps" type="number" min="1" max="10000" value="{{ server_traffic.limit_mbps }}" required></label><button class="small" type="submit">保存</button></form></aside></div>
 <div class="stats">
   <a class="stat" href="{{ url_for('socks_page') }}"><b>{{ socks|length }}</b><span>SOCKS5 / 30</span></a>
   <a class="stat" href="{{ url_for('socks_page') }}"><b>{{ socks|selectattr('status','equalto','active')|list|length }}</b><span>健康出口</span></a>
@@ -13,5 +13,7 @@
 </div>
 <section class="card wifi-summary"><div class="section-title"><h2>英国 Wi‑Fi Calling</h2><a href="{{ url_for('wifi_calling_page') }}">详细监控 →</a></div>{% if wifi_latest %}<div class="wifi-cards">{% for item in wifi_latest %}<div><span class="status-dot {{ 'up' if item.ok else 'down' }}"></span><strong>{{ item.carrier }}</strong><b>{{ item.rate_24h }}%</b><small>24 小时连通率</small></div>{% endfor %}</div>{% else %}<p class="empty">等待第一次检测。</p>{% endif %}</section>
 {% endblock %}
+
+{% block scripts %}<script>document.querySelectorAll('[data-traffic-action]').forEach(s=>{const update=()=>{const f=s.closest('form').querySelector('[data-limit-field]');f.classList.toggle('is-muted',s.value==='disconnect');f.querySelector('input').disabled=s.value==='disconnect'};s.addEventListener('change',update);update()})</script>{% endblock %}
 
 

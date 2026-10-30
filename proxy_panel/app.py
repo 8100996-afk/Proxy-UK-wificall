@@ -222,16 +222,17 @@ def create_app():
         except ValueError:
             quota_tb, limit_mbps = 0, 0
         action = request.form.get("action", "limit")
+        return_endpoint = "dashboard" if request.form.get("return_to") == "dashboard" else "settings_page"
         if not 0.01 <= quota_tb <= 10000 or not 1 <= limit_mbps <= 10000 or action not in {"limit", "disconnect"}:
             flash("服务器总流量设置不正确", "error")
-            return redirect(url_for("settings_page"))
+            return redirect(url_for(return_endpoint))
         set_setting("server_traffic_quota_tb", f"{quota_tb:g}")
         set_setting("server_traffic_limit_mbps", str(limit_mbps))
         set_setting("server_traffic_action", action)
         schedule_rebuild()
         add_event("info", f"服务器总流量策略更新：{quota_tb:g} TB，达到后{'断开' if action == 'disconnect' else f'限速 {limit_mbps} Mbps'}")
         flash("服务器总流量策略已更新", "success")
-        return redirect(url_for("settings_page"))
+        return redirect(url_for(return_endpoint))
 
     @app.post("/server-traffic/reset")
     @login_required
