@@ -478,6 +478,7 @@ def create_app():
     @app.post("/secondary/<int:plan_id>/codes")
     @login_required
     def secondary_codes_add(plan_id):
+        prefix = request.form.get("prefix", "").strip().upper()
         try:
             count = int(request.form.get("count", "1"))
             speed = int(request.form.get("speed_mbps", "0"))
@@ -485,6 +486,12 @@ def create_app():
             days = int(request.form.get("valid_days", "0"))
         except ValueError:
             count, speed, quota, days = 0, 0, 0, 0
+        prefix_valid = not prefix or (
+            len(prefix) == 4 and prefix.isascii() and prefix.isalnum()
+        )
+        if not prefix_valid:
+            flash("自定义前4位必须是 4 位英文字母或数字", "error")
+            return redirect(url_for("activation_codes_page"))
         if not 1 <= count <= 500 or not 10 <= speed <= 100 or quota <= 0 or not 1 <= days <= 3650:
             flash("激活码参数不正确；单次最多生成 500 个", "error")
             return redirect(url_for("activation_codes_page"))
@@ -508,8 +515,10 @@ def create_app():
                 return redirect(url_for("activation_codes_page"))
             for _ in range(count):
                 while True:
-                    raw = secrets.token_hex(8).upper()
-                    code = "-".join(raw[i:i + 4] for i in range(0, 16, 4))
+                    random_groups = [secrets.token_hex(2).upper() for _ in range(3)]
+                    code = "-".join(
+                        ([prefix] if prefix else [secrets.token_hex(2).upper()]) + random_groups
+                    )
                     try:
                         conn.execute(
                             """INSERT INTO activation_codes(plan_id,code,speed_mbps,quota_gb,
@@ -520,7 +529,8 @@ def create_app():
                         break
                     except sqlite3.IntegrityError:
                         continue
-        flash(f"已生成 {len(created)} 个激活码", "success")
+        prefix_note = f"，前4位为 {prefix}" if prefix else ""
+        flash(f"已生成 {len(created)} 个激活码{prefix_note}", "success")
         return redirect(url_for("activation_codes_page"))
 
     @app.post("/activation/<int:code_id>/update")

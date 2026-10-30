@@ -94,8 +94,20 @@ def test_routes_exit_switch_and_parent_quota(monkeypatch):
             "/subscriptions/999999/exits",
             data={"csrf": "test-csrf", "socks_id": str(sock_id)},
         ).status_code == 302
+        assert client.post(
+            f"/secondary/{plan_id}/codes",
+            data={
+                "csrf": "test-csrf", "prefix": "qian", "count": "2",
+                "speed_mbps": "30", "quota_gb": "1", "valid_days": "30",
+            },
+        ).status_code == 302
 
     with db() as conn:
+        custom_codes = conn.execute(
+            "SELECT code FROM activation_codes WHERE code LIKE 'QIAN-%' ORDER BY id"
+        ).fetchall()
+        assert len(custom_codes) == 2
+        assert all(len(row["code"].split("-")) == 4 for row in custom_codes)
         conn.execute("UPDATE subscriptions SET quota_exceeded=1 WHERE id=?", (sub_id,))
     config = xray_config()
     users = config["inbounds"][0]["settings"]["users"]
