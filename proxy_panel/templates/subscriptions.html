@@ -1,95 +1,41 @@
 {% extends "base.html" %}
-{% block title %}订阅管理 · Proxy Panel{% endblock %}
+{% block title %}主订阅 · Proxy Panel{% endblock %}
 {% block content %}
-<div class="page-head">
-  <div><h1>订阅管理</h1><p>TCP 自动优选健康 SOCKS5；全部不可用时回落伦敦服务器出口，恢复后自动切回。</p></div>
-  <span class="count">{{ subs|length }} 个订阅</span>
-</div>
+<div class="page-head"><div><h1>主订阅</h1><p>主订阅只管理总配额与出口；二级套餐、激活码和三级账号在独立页面管理。</p></div><span class="count">{{ subs|length }} 个</span></div>
 <section class="card">
-  <h2>创建订阅</h2>
-  <form method="post" action="/subscriptions">
-    <input type="hidden" name="csrf" value="{{ csrf_token }}">
-    <input type="hidden" name="request_key" value="{{ create_request_key }}">
-    <div class="subscription-create">
-      <label>订阅名称<input name="name" placeholder="手机订阅" required></label>
-      <label>每月流量额度（GB）<input name="quota_gb" type="number" min="1" max="1000000" step="1" value="1000" required></label>
-      <div class="checks">
-        <span>选择出口（最多 3 个）</span>
-        {% for item in socks if item.status == 'active' %}
-        <label><input type="checkbox" name="socks_id" value="{{ item.id }}"> {{ item.name }} · {{ item.exit_ip }}</label>
-        {% else %}
-        <p class="muted">当前没有健康 SOCKS5；仍可创建并使用伦敦服务器兜底出口。</p>
-        {% endfor %}
-      </div>
-      <button type="submit">创建订阅</button>
-    </div>
+  <div class="section-title"><h2>创建主订阅</h2><span>最多选择 3 个 SOCKS5</span></div>
+  <form method="post" action="/subscriptions" class="main-sub-create">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="request_key" value="{{ create_request_key }}">
+    <label>名称<input name="name" placeholder="例如：手机主订阅" required></label>
+    <label>每月总配额 GB<input name="quota_gb" type="number" min="1" max="1000000" value="1000" required></label>
+    <div class="exit-picker-summary"><span>出口</span><b>未选择则使用伦敦服务器兜底</b><button class="small" type="button" data-open-dialog="create-exits">选择 SOCKS5</button></div>
+    <button type="submit">创建主订阅</button>
+    <dialog id="create-exits" class="exit-dialog"><div class="dialog-head"><div><h3>选择出口</h3><p>最多 3 个；保存前会重新实测。超过 1000 ms 的出口不建议加入轮换。</p></div><button type="button" class="ghost" data-close-dialog>关闭</button></div><div class="exit-options">{% for item in socks if item.status == 'active' %}<label><input type="checkbox" name="socks_id" value="{{ item.id }}"><span><b>{{ item.name }}{% if item.latency_ms is not none and item.latency_ms > 1000 %} · 高延迟{% endif %}</b><small>实测出口 {{ item.exit_ip }} · {{ item.latency_ms or '—' }} ms</small></span></label>{% else %}<p class="empty">没有健康 SOCKS5。</p>{% endfor %}</div><button type="button" data-close-dialog>完成选择</button></dialog>
   </form>
 </section>
-<section class="card">
-  <div class="section-title"><h2>订阅列表</h2><span>防重复提交 · 自动兼容 Clash</span></div>
-  {% if subs %}
-  <div class="sub-grid">
-    {% for sub in subs %}
-    <article class="sub-card">
-      <div class="sub-head">
-        <div>
-          <h3>{{ sub.name }}</h3>
-          <span class="badge {{ 'active' if sub.status in ('healthy','fallback') else ('warning' if sub.status == 'limited' else 'disabled') }}">{{ {'healthy':'健康','fallback':'服务器兜底','limited':'已限速 10 Mbps','no_exit':'无出口','disabled':'停用','error':'异常','unchecked':'待检测'}.get(sub.status, sub.status) }}</span>
-        </div>
-        <button class="copy" type="button" onclick="navigator.clipboard.writeText('{{ sub_base_url }}/s/{{ sub.token }}?format=clash');this.textContent='已复制 Clash'">复制 Clash</button>
-      </div>
-      <code class="url">{{ sub_base_url }}/s/{{ sub.token }}</code>
-      <div class="actions">
-        <button class="small" type="button" onclick="navigator.clipboard.writeText('{{ sub_base_url }}/s/{{ sub.token }}');this.textContent='已复制自动识别链接'">复制自动识别</button>
-        <button class="small" type="button" onclick="navigator.clipboard.writeText('{{ sub_base_url }}/s/{{ sub.token }}?format=base64');this.textContent='已复制通用订阅'">复制通用订阅</button>
-      </div>
-      <div class="quota-box">
-        <div><strong>本月 {{ sub.used_bytes|traffic_gb }} / {{ '%g'|format(sub.quota_gb) }} GB</strong><span>每月 1 日 00:00（新加坡时间）自动清零；达到额度后限速 10 Mbps</span></div>
-        <form method="post" action="/subscriptions/{{ sub.id }}/quota">
-          <input type="hidden" name="csrf" value="{{ csrf_token }}">
-          <label>额度 GB<input name="quota_gb" type="number" min="1" max="1000000" step="1" value="{{ '%g'|format(sub.quota_gb) }}" required></label>
-          <button class="small" type="submit">修改额度</button>
-        </form>
-        <form method="post" action="/subscriptions/{{ sub.id }}/quota-reset" onsubmit="return confirm('确认把本月已用流量清零并恢复全速？')">
-          <input type="hidden" name="csrf" value="{{ csrf_token }}">
-          <button class="small warning" type="submit">手动清零</button>
-        </form>
-      </div>
-      {% if sub.last_error %}<p class="muted">{{ sub.last_error }}</p>{% endif %}
-      <form method="post" action="/subscriptions/{{ sub.id }}/exits">
-        <input type="hidden" name="csrf" value="{{ csrf_token }}">
-        <div class="checks">
-          <span>智能优选出口（最多 3 个，故障时服务器兜底）</span>
-          {% for item in socks if item.status == 'active' %}
-          <label><input type="checkbox" name="socks_id" value="{{ item.id }}" {{ 'checked' if item.id in selected.get(sub.id, []) else '' }}> {{ item.name }} · {{ item.exit_ip }} · {{ item.latency_ms or '—' }} ms</label>
-          {% endfor %}
-        </div>
-        <button class="small" type="submit">保存出口</button>
-      </form>
-      <div class="actions foot">
-        <form method="post" action="/subscriptions/{{ sub.id }}/toggle"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small" type="submit">{{ '停用' if sub.enabled else '启用' }}</button></form>
-        <form method="post" action="/subscriptions/{{ sub.id }}/reset" onsubmit="return confirm('旧订阅链接和节点凭据会立即失效，确认重置？')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small warning" type="submit">重置</button></form>
-        <form method="post" action="/subscriptions/{{ sub.id }}/delete" onsubmit="return confirm('删除后正在使用此订阅的设备会断开，确认删除？')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small danger" type="submit">删除</button></form>
-      </div>
-    </article>
-    {% endfor %}
-  </div>
-  {% else %}<p class="empty">还没有订阅。</p>{% endif %}
-</section>
+<div class="sub-grid">{% for sub in subs %}{% set exits=selected_details.get(sub.id, []) %}
+  <article class="sub-card">
+    <div class="sub-head"><div><h2>{{ sub.name }}</h2><span class="badge {{ 'active' if sub.status in ('healthy','fallback') else ('warning' if sub.status == 'limited' else 'disabled') }}">{{ {'healthy':'健康','fallback':'服务器兜底','limited':'额度限速','disabled':'已停用','error':'异常','unchecked':'待检测'}.get(sub.status,sub.status) }}</span></div><button class="copy small" type="button" data-copy="{{ sub_base_url }}/s/{{ sub.token }}?format=clash">复制 Clash</button></div>
+    <code class="url">{{ sub_base_url }}/s/{{ sub.token }}</code>
+    <div class="actions"><button class="small" type="button" data-copy="{{ sub_base_url }}/s/{{ sub.token }}">复制自动识别</button><button class="small" type="button" data-copy="{{ sub_base_url }}/s/{{ sub.token }}?format=base64">复制通用订阅</button></div>
+    <div class="usage-block"><div><span>本月实际总用量（含三级账号）</span><b>{{ sub.used_bytes|traffic_gb }} / {{ '%g'|format(sub.quota_gb) }} GB</b></div><progress max="{{ sub.quota_gb * GIB }}" value="{{ sub.used_bytes }}"></progress><small>每月 1 日新加坡时间清零；主账号与三级账号共同消耗。</small></div>
+    <div class="usage-block allocation"><div><span>已分配给激活码</span><b>{{ '%g'|format(sub.allocated_gb) }} / {{ '%g'|format(sub.quota_gb) }} GB</b></div><progress max="{{ sub.quota_gb }}" value="{{ sub.allocated_gb }}"></progress><small>剩余可分配 {{ '%g'|format([sub.quota_gb-sub.allocated_gb,0]|max) }} GB</small></div>
+    <div class="exit-state"><div><span>当前出口策略</span><b>{{ '伦敦服务器兜底' if not exits else ('固定 ' ~ exits[0].exit_ip if exits|length == 1 else exits|length ~ ' 个出口动态轮换') }}</b></div><div class="exit-pills">{% for item in exits %}<span class="{{ 'bad' if item.status != 'active' or (item.latency_ms is not none and item.latency_ms > 1000) else 'ok' }}">{{ item.name }} · {{ item.exit_ip }} · {{ item.latency_ms or '—' }} ms{% if item.latency_ms is not none and item.latency_ms > 1000 %} · 高延迟暂不参与轮换{% endif %}</span>{% else %}<span class="fallback">服务器 IP</span>{% endfor %}</div></div>
+    {% if sub.last_error %}<p class="muted">{{ sub.last_error }}</p>{% endif %}
+    <div class="sub-controls">
+      <form method="post" action="/subscriptions/{{ sub.id }}/quota" class="inline-fields compact"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>主配额 GB<input name="quota_gb" type="number" min="1" max="1000000" value="{{ '%g'|format(sub.quota_gb) }}"></label><button class="small">修改</button></form>
+      <button class="small primary" type="button" data-open-dialog="exits-{{ sub.id }}">切换出口</button>
+      <a class="button-link small" href="/secondary?parent_id={{ sub.id }}">管理二级订阅</a><a class="button-link small" href="/activation-codes?parent_id={{ sub.id }}">激活码</a><a class="button-link small" href="/secondary-accounts?parent_id={{ sub.id }}">三级账号</a>
+    </div>
+    <dialog id="exits-{{ sub.id }}" class="exit-dialog"><form method="post" action="/subscriptions/{{ sub.id }}/exits"><input type="hidden" name="csrf" value="{{ csrf_token }}"><div class="dialog-head"><div><h3>{{ sub.name }} · 切换出口</h3><p>保存时逐个实测；单出口会直接固定。超过 1000 ms 的出口不建议加入轮换。</p></div><button type="button" class="ghost" data-close-dialog>关闭</button></div><div class="exit-options">{% for item in socks if item.status == 'active' %}<label><input type="checkbox" name="socks_id" value="{{ item.id }}" {{ 'checked' if item.id in selected.get(sub.id,[]) else '' }}><span><b>{{ item.name }}{% if item.latency_ms is not none and item.latency_ms > 1000 %} · 高延迟{% endif %}</b><small>实测出口 {{ item.exit_ip }} · {{ item.latency_ms or '—' }} ms</small></span></label>{% else %}<p class="empty">没有健康 SOCKS5；清空选择会使用伦敦服务器兜底。</p>{% endfor %}</div><button type="submit">实测并保存出口</button></form></dialog>
+    <div class="actions foot"><form method="post" action="/subscriptions/{{ sub.id }}/quota-reset" onsubmit="return confirm('清零主订阅和本月三级账号汇总用量？')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small warning">本月清零</button></form><form method="post" action="/subscriptions/{{ sub.id }}/toggle"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small">{{ '停用' if sub.enabled else '启用' }}</button></form><form method="post" action="/subscriptions/{{ sub.id }}/reset" onsubmit="return confirm('旧链接与节点凭据将立即失效？')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small warning">重置</button></form><form method="post" action="/subscriptions/{{ sub.id }}/delete" onsubmit="return confirm('主订阅、关联二级订阅、激活码和三级账号都会永久删除，确认？')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small danger">删除</button></form></div>
+  </article>
+{% else %}<section class="card empty">还没有主订阅。</section>{% endfor %}</div>
 <script>
-document.querySelectorAll('.checks').forEach(group => group.addEventListener('change', () => {
-  const checked = group.querySelectorAll('input:checked');
-  if (checked.length > 3) {
-    checked[checked.length - 1].checked = false;
-    alert('最多选择 3 个出口');
-  }
-}));
-document.querySelectorAll('form').forEach(form => form.addEventListener('submit', () => {
-  if (!form.checkValidity()) return;
-  setTimeout(() => form.querySelectorAll('button[type="submit"]').forEach(button => {
-    button.disabled = true;
-    button.textContent = '处理中…';
-  }), 0);
-}));
+document.querySelectorAll('[data-open-dialog]').forEach(b=>b.addEventListener('click',()=>document.getElementById(b.dataset.openDialog).showModal()));
+document.querySelectorAll('[data-close-dialog]').forEach(b=>b.addEventListener('click',()=>b.closest('dialog').close()));
+document.querySelectorAll('.exit-options').forEach(group=>group.addEventListener('change',e=>{const c=group.querySelectorAll('input:checked');if(c.length>3){e.target.checked=false;alert('最多选择 3 个出口');}}));
+document.querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',async()=>{await navigator.clipboard.writeText(b.dataset.copy);b.textContent='已复制';}));
+document.querySelectorAll('form').forEach(form=>form.addEventListener('submit',()=>{if(!form.checkValidity())return;setTimeout(()=>form.querySelectorAll('button[type=submit]').forEach(b=>{b.disabled=true;b.textContent='处理中…';}),0);}));
 </script>
 {% endblock %}

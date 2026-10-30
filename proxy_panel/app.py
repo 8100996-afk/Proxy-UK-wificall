@@ -13,6 +13,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from .core import (
     GIB,
+    TIB,
     add_event,
     clash_subscription_text,
     check_one,
@@ -27,6 +28,7 @@ from .core import (
     test_socks,
     now,
     quota_period_start,
+    server_traffic_status,
 )
 
 
@@ -34,6 +36,27 @@ def profile_title(value):
     """Encode subscription titles as an ASCII-safe HTTP header value."""
     encoded = base64.b64encode(str(value or "Subscription").encode("utf-8")).decode("ascii")
     return f"base64:{encoded}"
+
+
+def allocation_summary(conn, parent_id, exclude_code_id=None):
+    parent = conn.execute(
+        "SELECT id,name,quota_gb FROM subscriptions WHERE id=?", (parent_id,)
+    ).fetchone()
+    if not parent:
+        return None
+    sql = """SELECT COALESCE(SUM(a.quota_gb),0) FROM activation_codes a
+             JOIN secondary_plans p ON p.id=a.plan_id WHERE p.parent_subscription_id=?"""
+    params = [parent_id]
+    if exclude_code_id is not None:
+        sql += " AND a.id<>?"
+        params.append(exclude_code_id)
+    allocated = float(conn.execute(sql, params).fetchone()[0] or 0)
+    return {
+        "quota_gb": float(parent["quota_gb"]),
+        "allocated_gb": allocated,
+        "remaining_gb": max(0, float(parent["quota_gb"]) - allocated),
+        "name": parent["name"],
+    }
 
 
 def create_app():
@@ -56,6 +79,10 @@ def create_app():
     @app.template_filter("traffic_gb")
     def traffic_gb(value):
         return f"{int(value or 0) / GIB:.2f}"
+
+    @app.template_filter("traffic_tb")
+    def traffic_tb(value):
+        return f"{int(value or 0) / TIB:.3f}"
 
     init_db()
     login_attempts = {}
@@ -127,7 +154,7 @@ def create_app():
     def inject_csrf():
         if "csrf" not in session:
             session["csrf"] = secrets.token_urlsafe(24)
-        return {"csrf_token": session["csrf"], "sub_base_url": sub_base_url}
+        return {"csrf_token": session["csrf"], "sub_base_url": sub_base_url, "GIB": GIB, "TIB": TIB}
 
     @app.before_request
     def csrf_check():
@@ -186,6 +213,36 @@ def create_app():
             flash("管理员密码已修改", "success")
         return redirect(url_for("settings_page"))
 
+    @app.post("/server-traffic")
+    @login_required
+    def server_traffic_update():
+        try:
+            quota_tb = float(request.form.get("quota_tb", "2"))
+            limit_mbps = int(request.form.get("limit_mbps", "10"))
+        except ValueError:
+            quota_tb, limit_mbps = 0, 0
+        action = request.form.get("action", "limit")
+        if not 0.01 <= quota_tb <= 10000 or not 1 <= limit_mbps <= 10000 or action not in {"limit", "disconnect"}:
+            flash("服务器总流量设置不正确", "error")
+            return redirect(url_for("settings_page"))
+        set_setting("server_traffic_quota_tb", f"{quota_tb:g}")
+        set_setting("server_traffic_limit_mbps", str(limit_mbps))
+        set_setting("server_traffic_action", action)
+        schedule_rebuild()
+        add_event("info", f"服务器总流量策略更新：{quota_tb:g} TB，达到后{'断开' if action == 'disconnect' else f'限速 {limit_mbps} Mbps'}")
+        flash("服务器总流量策略已更新", "success")
+        return redirect(url_for("settings_page"))
+
+    @app.post("/server-traffic/reset")
+    @login_required
+    def server_traffic_reset():
+        set_setting("server_traffic_used_bytes", "0")
+        set_setting("server_traffic_period_start", quota_period_start())
+        schedule_rebuild()
+        add_event("warning", "服务器本月总流量已手动清零")
+        flash("服务器本月总流量已清零", "success")
+        return redirect(url_for("settings_page"))
+
     @app.get("/")
     @login_required
     def dashboard():
@@ -194,7 +251,10 @@ def create_app():
             subs = conn.execute("SELECT * FROM subscriptions ORDER BY id DESC").fetchall()
             events = conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 8").fetchall()
         wifi_latest, _ = wifi_call_data(0)
-        return render_template("overview.html", socks=socks, subs=subs, events=events, wifi_latest=wifi_latest)
+        return render_template(
+            "overview.html", socks=socks, subs=subs, events=events,
+            wifi_latest=wifi_latest, server_traffic=server_traffic_status(),
+        )
 
     @app.get("/socks")
     @login_required
@@ -208,16 +268,28 @@ def create_app():
     def subscriptions_page():
         with db() as conn:
             socks = conn.execute("SELECT * FROM socks ORDER BY id DESC").fetchall()
-            subs = conn.execute("SELECT * FROM subscriptions ORDER BY id DESC").fetchall()
-            links = conn.execute("SELECT subscription_id,socks_id FROM subscription_socks ORDER BY position").fetchall()
+            subs = conn.execute(
+                """SELECT s.*,
+                   (SELECT COALESCE(SUM(a.quota_gb),0) FROM activation_codes a
+                    JOIN secondary_plans p ON p.id=a.plan_id WHERE p.parent_subscription_id=s.id) AS allocated_gb
+                   FROM subscriptions s ORDER BY s.id DESC"""
+            ).fetchall()
+            links = conn.execute(
+                """SELECT ss.subscription_id,ss.socks_id,ss.position,s.name,s.exit_ip,s.latency_ms,s.status
+                   FROM subscription_socks ss JOIN socks s ON s.id=ss.socks_id
+                   ORDER BY ss.subscription_id,ss.position"""
+            ).fetchall()
         selected = {}
+        selected_details = {}
         for link in links:
             selected.setdefault(link["subscription_id"], []).append(link["socks_id"])
+            selected_details.setdefault(link["subscription_id"], []).append(dict(link))
         return render_template(
             "subscriptions.html",
             socks=socks,
             subs=subs,
             selected=selected,
+            selected_details=selected_details,
             create_request_key=secrets.token_urlsafe(24),
         )
 
@@ -226,7 +298,7 @@ def create_app():
     def settings_page():
         with db() as conn:
             events = conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 100").fetchall()
-        return render_template("settings.html", events=events)
+        return render_template("settings.html", events=events, server_traffic=server_traffic_status())
 
     @app.get("/wifi-calling")
     @login_required
@@ -237,54 +309,106 @@ def create_app():
     @app.get("/secondary")
     @login_required
     def secondary_page():
+        try:
+            parent_filter = int(request.args.get("parent_id", "0"))
+        except ValueError:
+            parent_filter = 0
         with db() as conn:
             expired = conn.execute(
                 "DELETE FROM activation_codes WHERE status='active' AND expires_at<=?", (now(),)
             ).rowcount
-            plans = conn.execute(
+            plan_sql = (
                 """SELECT p.*,s.name AS parent_name,
                    (SELECT COUNT(*) FROM activation_codes a WHERE a.plan_id=p.id) AS code_count,
-                   (SELECT COUNT(*) FROM activation_codes a WHERE a.plan_id=p.id AND a.status='active') AS active_count
+                   (SELECT COUNT(*) FROM activation_codes a WHERE a.plan_id=p.id AND a.status='active') AS active_count,
+                   s.quota_gb AS parent_quota_gb,
+                   (SELECT COALESCE(SUM(a.quota_gb),0) FROM activation_codes a
+                    JOIN secondary_plans px ON px.id=a.plan_id WHERE px.parent_subscription_id=s.id) AS parent_allocated_gb
                    FROM secondary_plans p JOIN subscriptions s ON s.id=p.parent_subscription_id
-                   ORDER BY p.id DESC"""
-            ).fetchall()
+                   """
+            )
+            plan_params = []
+            if parent_filter:
+                plan_sql += " WHERE p.parent_subscription_id=?"
+                plan_params.append(parent_filter)
+            plan_sql += " ORDER BY p.id DESC"
+            plans = conn.execute(plan_sql, plan_params).fetchall()
             subs = conn.execute("SELECT id,name,enabled FROM subscriptions ORDER BY id DESC").fetchall()
         if expired:
             schedule_rebuild()
-        return render_template("secondary.html", plans=plans, subs=subs)
+        return render_template("secondary.html", plans=plans, subs=subs, parent_filter=parent_filter)
 
     @app.get("/activation-codes")
     @login_required
     def activation_codes_page():
+        query = request.args.get("q", "").strip().upper()
+        normalized = "".join(ch for ch in query if ch.isalnum())
+        try:
+            parent_filter = int(request.args.get("parent_id", "0"))
+        except ValueError:
+            parent_filter = 0
         with db() as conn:
             plans = conn.execute(
-                """SELECT p.*,s.name AS parent_name,
+                """SELECT p.*,s.name AS parent_name,s.quota_gb AS parent_quota_gb,
+                   (SELECT COALESCE(SUM(ax.quota_gb),0) FROM activation_codes ax
+                    JOIN secondary_plans px ON px.id=ax.plan_id WHERE px.parent_subscription_id=s.id) AS parent_allocated_gb,
                    (SELECT COUNT(*) FROM activation_codes a WHERE a.plan_id=p.id AND a.status='unused') AS unused_count
                    FROM secondary_plans p JOIN subscriptions s ON s.id=p.parent_subscription_id
                    ORDER BY p.id DESC"""
             ).fetchall()
-            codes = conn.execute(
-                """SELECT a.*,p.name AS plan_name FROM activation_codes a
-                   JOIN secondary_plans p ON p.id=a.plan_id WHERE a.status='unused' ORDER BY a.id DESC"""
-            ).fetchall()
-        return render_template("activation_codes.html", plans=plans, codes=codes)
+            code_sql = """SELECT a.*,p.name AS plan_name,s.name AS parent_name,s.id AS parent_id
+                          FROM activation_codes a JOIN secondary_plans p ON p.id=a.plan_id
+                          JOIN subscriptions s ON s.id=p.parent_subscription_id WHERE 1=1"""
+            params = []
+            if normalized:
+                code_sql += " AND REPLACE(UPPER(a.code),'-','') LIKE ?"
+                params.append(f"%{normalized}%")
+            else:
+                code_sql += " AND a.status='unused'"
+            if parent_filter:
+                code_sql += " AND s.id=?"
+                params.append(parent_filter)
+            code_sql += " ORDER BY a.id DESC LIMIT 500"
+            codes = conn.execute(code_sql, params).fetchall()
+            parents = conn.execute("SELECT id,name FROM subscriptions ORDER BY name").fetchall()
+        return render_template(
+            "activation_codes.html", plans=plans, codes=codes, query=query,
+            parent_filter=parent_filter, parents=parents,
+        )
 
     @app.get("/secondary-accounts")
     @login_required
     def secondary_accounts_page():
+        query = request.args.get("q", "").strip().upper()
+        normalized = "".join(ch for ch in query if ch.isalnum())
+        try:
+            parent_filter = int(request.args.get("parent_id", "0"))
+        except ValueError:
+            parent_filter = 0
         with db() as conn:
             expired = conn.execute(
                 "DELETE FROM activation_codes WHERE status='active' AND expires_at<=?", (now(),)
             ).rowcount
-            accounts = conn.execute(
-                """SELECT a.*,p.name AS plan_name,s.name AS parent_name FROM activation_codes a
+            sql = """SELECT a.*,p.name AS plan_name,s.name AS parent_name,s.id AS parent_id FROM activation_codes a
                    JOIN secondary_plans p ON p.id=a.plan_id
                    JOIN subscriptions s ON s.id=p.parent_subscription_id
-                   WHERE a.status='active' ORDER BY a.id DESC"""
-            ).fetchall()
+                   WHERE a.status='active'"""
+            params = []
+            if normalized:
+                sql += " AND REPLACE(UPPER(a.code),'-','') LIKE ?"
+                params.append(f"%{normalized}%")
+            if parent_filter:
+                sql += " AND s.id=?"
+                params.append(parent_filter)
+            sql += " ORDER BY a.id DESC LIMIT 500"
+            accounts = conn.execute(sql, params).fetchall()
+            parents = conn.execute("SELECT id,name FROM subscriptions ORDER BY name").fetchall()
         if expired:
             schedule_rebuild()
-        return render_template("secondary_accounts.html", accounts=accounts)
+        return render_template(
+            "secondary_accounts.html", accounts=accounts, query=query,
+            parent_filter=parent_filter, parents=parents,
+        )
 
     @app.post("/secondary")
     @login_required
@@ -354,8 +478,21 @@ def create_app():
             return redirect(url_for("activation_codes_page"))
         created = []
         with db() as conn:
-            if not conn.execute("SELECT 1 FROM secondary_plans WHERE id=?", (plan_id,)).fetchone():
+            plan = conn.execute(
+                "SELECT * FROM secondary_plans WHERE id=?", (plan_id,)
+            ).fetchone()
+            if not plan:
                 flash("二级订阅不存在", "error")
+                return redirect(url_for("activation_codes_page"))
+            allocation = allocation_summary(conn, plan["parent_subscription_id"])
+            required = count * quota
+            if not allocation or required > allocation["remaining_gb"] + 1e-9:
+                remaining = allocation["remaining_gb"] if allocation else 0
+                flash(
+                    f"主订阅只剩 {remaining:g} GB 流量可分配，本次生成需要 {required:g} GB；"
+                    "由于流量不足，暂时无法生成，你可以去修改主订阅配额来恢复。",
+                    "error",
+                )
                 return redirect(url_for("activation_codes_page"))
             for _ in range(count):
                 while True:
@@ -391,6 +528,15 @@ def create_app():
             if not row:
                 flash("激活码不存在", "error")
                 return redirect(url_for("secondary_accounts_page" if request.form.get("source") == "accounts" else "activation_codes_page"))
+            plan = conn.execute("SELECT parent_subscription_id FROM secondary_plans WHERE id=?", (row["plan_id"],)).fetchone()
+            allocation = allocation_summary(conn, plan["parent_subscription_id"], code_id) if plan else None
+            if not allocation or quota > allocation["remaining_gb"] + 1e-9:
+                remaining = allocation["remaining_gb"] if allocation else 0
+                flash(
+                    f"主订阅只剩 {remaining:g} GB 流量可分配，本次修改需要 {quota:g} GB；请先提高主订阅配额。",
+                    "error",
+                )
+                return redirect(url_for("secondary_accounts_page" if request.form.get("source") == "accounts" else "activation_codes_page"))
             expires = row["expires_at"]
             if row["activated_at"]:
                 activated = datetime.fromisoformat(row["activated_at"])
@@ -415,6 +561,32 @@ def create_app():
             schedule_rebuild()
         flash("激活码及其账号已删除", "success")
         return redirect(url_for("secondary_accounts_page" if row and row["status"] == "active" else "activation_codes_page"))
+
+    @app.post("/activations/bulk-delete")
+    @login_required
+    def activation_bulk_delete():
+        target = "secondary_accounts_page" if request.form.get("source") == "accounts" else "activation_codes_page"
+        ids = []
+        for value in request.form.getlist("code_id")[:500]:
+            try:
+                ids.append(int(value))
+            except ValueError:
+                continue
+        if not ids:
+            flash("请先选择要删除的激活码或三级账号", "error")
+            return redirect(url_for(target))
+        placeholders = ",".join("?" for _ in ids)
+        with db() as conn:
+            active = conn.execute(
+                f"SELECT COUNT(*) FROM activation_codes WHERE status='active' AND id IN ({placeholders})", ids
+            ).fetchone()[0]
+            deleted = conn.execute(
+                f"DELETE FROM activation_codes WHERE id IN ({placeholders})", ids
+            ).rowcount
+        if active:
+            schedule_rebuild()
+        flash(f"已删除 {deleted} 条激活码/三级账号", "success")
+        return redirect(url_for(target))
 
     @app.post("/secondary/<int:plan_id>/delete")
     @login_required
@@ -541,17 +713,43 @@ def create_app():
         if len(sock_ids) > 3:
             flash("每个订阅最多选择 3 个出口", "error")
             return redirect(url_for("subscriptions_page"))
+        try:
+            numeric_sock_ids = [int(sid) for sid in sock_ids]
+        except (TypeError, ValueError):
+            flash("出口选择无效，请重新选择", "error")
+            return redirect(url_for("subscriptions_page"))
+        tested = []
         with db() as conn:
-            valid = {str(r["id"]) for r in conn.execute("SELECT id FROM socks WHERE status='active'")}
-            if any(sid not in valid for sid in sock_ids):
-                flash("只能选择检测正常的 SOCKS5", "error")
+            rows = conn.execute(
+                f"SELECT * FROM socks WHERE id IN ({','.join('?' for _ in sock_ids)})" if sock_ids else "SELECT * FROM socks WHERE 0",
+                numeric_sock_ids,
+            ).fetchall()
+        for row in rows:
+            ok, exit_ip, latency, error = test_socks(
+                row["host"], row["port"], decrypt(row["username_enc"]), decrypt(row["password_enc"]), timeout=10
+            )
+            if not ok:
+                flash(f"出口 {row['name']} 实测失败，未保存：{error}", "error")
                 return redirect(url_for("subscriptions_page"))
+            tested.append((row["id"], exit_ip, latency))
+        with db() as conn:
+            valid = {str(row[0]) for row in tested}
+            if any(sid not in valid for sid in sock_ids):
+                flash("出口选择无效或已经不存在", "error")
+                return redirect(url_for("subscriptions_page"))
+            for socks_id, exit_ip, latency in tested:
+                conn.execute(
+                    "UPDATE socks SET status='active',exit_ip=?,latency_ms=?,fail_count=0,last_error=NULL,last_checked_at=? WHERE id=?",
+                    (exit_ip, latency, now(), socks_id),
+                )
             conn.execute("DELETE FROM subscription_socks WHERE subscription_id=?", (sub_id,))
             for position, sid in enumerate(sock_ids):
                 conn.execute("INSERT INTO subscription_socks(subscription_id,socks_id,position) VALUES(?,?,?)", (sub_id, int(sid), position))
             conn.execute("UPDATE subscriptions SET updated_at=? WHERE id=?", (now(), sub_id))
         schedule_rebuild()
-        flash("轮换出口已更新", "success")
+        summary = "伦敦服务器兜底" if not tested else "、".join(f"{ip} ({latency} ms)" for _, ip, latency in tested)
+        add_event("info", f"订阅 #{sub_id} 出口切换为 {summary}")
+        flash(f"出口已实测并更新：{summary}", "success")
         return redirect(url_for("subscriptions_page"))
 
     @app.post("/subscriptions/<int:sub_id>/reset")
@@ -585,6 +783,14 @@ def create_app():
             if not row:
                 flash("订阅不存在", "error")
                 return redirect(url_for("subscriptions_page"))
+            allocated = conn.execute(
+                """SELECT COALESCE(SUM(a.quota_gb),0) FROM activation_codes a
+                   JOIN secondary_plans p ON p.id=a.plan_id WHERE p.parent_subscription_id=?""",
+                (sub_id,),
+            ).fetchone()[0]
+            if quota_gb + 1e-9 < float(allocated or 0):
+                flash(f"当前已向激活码分配 {float(allocated):g} GB，主订阅额度不能低于该值", "error")
+                return redirect(url_for("subscriptions_page"))
             exceeded = int(int(row["used_bytes"] or 0) >= quota_gb * GIB)
             changed = exceeded != int(row["quota_exceeded"])
             conn.execute(
@@ -606,9 +812,14 @@ def create_app():
                 flash("订阅不存在", "error")
                 return redirect(url_for("subscriptions_page"))
             conn.execute(
-                """UPDATE subscriptions SET used_bytes=0,quota_exceeded=0,
+                """UPDATE subscriptions SET used_bytes=0,direct_used_bytes=0,quota_exceeded=0,
                    quota_period_start=?,updated_at=? WHERE id=?""",
                 (quota_period_start(), now(), sub_id),
+            )
+            conn.execute(
+                """UPDATE activation_codes SET parent_period_bytes=0 WHERE plan_id IN
+                   (SELECT id FROM secondary_plans WHERE parent_subscription_id=?)""",
+                (sub_id,),
             )
         schedule_rebuild()
         add_event("info", f"订阅 {row['name']} 本月流量已手动清零")

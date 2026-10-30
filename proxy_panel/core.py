@@ -24,6 +24,7 @@ XRAY_CONFIG = Path(os.environ.get("XRAY_CONFIG", "/usr/local/etc/xray/config.jso
 NODE_DOMAIN = os.environ.get("NODE_DOMAIN", "node.example.com")
 XRAY_API = "127.0.0.1:10085"
 GIB = 1024 ** 3
+TIB = 1024 ** 4
 
 
 def now():
@@ -84,6 +85,7 @@ def init_db():
                 request_key TEXT UNIQUE,
                 quota_gb REAL NOT NULL DEFAULT 1000,
                 used_bytes INTEGER NOT NULL DEFAULT 0,
+                direct_used_bytes INTEGER NOT NULL DEFAULT 0,
                 quota_exceeded INTEGER NOT NULL DEFAULT 0,
                 quota_period_start TEXT,
                 stats_last_bytes INTEGER NOT NULL DEFAULT 0,
@@ -121,6 +123,7 @@ def init_db():
                 activated_at TEXT,
                 expires_at TEXT,
                 used_bytes INTEGER NOT NULL DEFAULT 0,
+                parent_period_bytes INTEGER NOT NULL DEFAULT 0,
                 stats_last_bytes INTEGER NOT NULL DEFAULT 0,
                 quota_exceeded INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
@@ -176,6 +179,12 @@ def init_db():
             conn.execute("ALTER TABLE subscriptions ADD COLUMN quota_period_start TEXT")
         if "stats_last_bytes" not in columns:
             conn.execute("ALTER TABLE subscriptions ADD COLUMN stats_last_bytes INTEGER NOT NULL DEFAULT 0")
+        if "direct_used_bytes" not in columns:
+            conn.execute("ALTER TABLE subscriptions ADD COLUMN direct_used_bytes INTEGER NOT NULL DEFAULT 0")
+            conn.execute("UPDATE subscriptions SET direct_used_bytes=used_bytes")
+        code_columns = {row["name"] for row in conn.execute("PRAGMA table_info(activation_codes)")}
+        if "parent_period_bytes" not in code_columns:
+            conn.execute("ALTER TABLE activation_codes ADD COLUMN parent_period_bytes INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             "UPDATE subscriptions SET quota_period_start=? WHERE quota_period_start IS NULL",
             (quota_period_start(),),
@@ -187,6 +196,17 @@ def init_db():
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_request_key "
             "ON subscriptions(request_key) WHERE request_key IS NOT NULL"
+        )
+        defaults = {
+            "server_traffic_quota_tb": "2",
+            "server_traffic_action": "limit",
+            "server_traffic_limit_mbps": "10",
+            "server_traffic_used_bytes": "0",
+            "server_traffic_period_start": quota_period_start(),
+        }
+        conn.executemany(
+            "INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)",
+            defaults.items(),
         )
 
 
@@ -217,6 +237,33 @@ def quota_period_start(reference=None):
     current = (reference or datetime.now(timezone.utc)).astimezone(ZoneInfo("Asia/Singapore"))
     local_start = current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     return local_start.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def server_traffic_status(conn=None):
+    owns_connection = conn is None
+    if owns_connection:
+        context = db()
+        conn = context.__enter__()
+    try:
+        values = {row["key"]: row["value"] for row in conn.execute(
+            "SELECT key,value FROM settings WHERE key LIKE 'server_traffic_%'"
+        )}
+        quota_tb = max(0.001, float(values.get("server_traffic_quota_tb", "2")))
+        used = max(0, int(values.get("server_traffic_used_bytes", "0")))
+        quota_bytes = int(quota_tb * TIB)
+        return {
+            "quota_tb": quota_tb,
+            "quota_bytes": quota_bytes,
+            "used_bytes": used,
+            "percent": min(100, round(used * 100 / quota_bytes, 2)) if quota_bytes else 100,
+            "exceeded": used >= quota_bytes,
+            "action": values.get("server_traffic_action", "limit"),
+            "limit_mbps": max(1, int(values.get("server_traffic_limit_mbps", "10"))),
+            "period_start": values.get("server_traffic_period_start", quota_period_start()),
+        }
+    finally:
+        if owns_connection:
+            context.__exit__(None, None, None)
 
 
 def collect_xray_traffic(rebuild_on_change=True):
@@ -261,31 +308,12 @@ def collect_xray_traffic(rebuild_on_change=True):
             if expired:
                 changed = True
             rows = conn.execute("SELECT * FROM subscriptions ORDER BY id").fetchall()
-            for sub in rows:
-                used = int(sub["used_bytes"] or 0)
-                exceeded = bool(sub["quota_exceeded"])
-                if sub["quota_period_start"] != period:
-                    used = 0
-                    if exceeded:
-                        changed = True
-                    exceeded = False
-                email = f"sub-{sub['id']}@proxy.local"
-                last_total = int(sub["stats_last_bytes"] or 0)
-                current_total = totals.get(email)
-                delta = 0
-                if current_total is not None:
-                    delta = current_total - last_total if current_total >= last_total else current_total
-                    collected += delta
-                    last_total = current_total
-                used += delta
-                new_exceeded = used >= float(sub["quota_gb"]) * GIB
-                if new_exceeded != exceeded:
-                    changed = True
-                conn.execute(
-                    """UPDATE subscriptions SET used_bytes=?,quota_exceeded=?,
-                       quota_period_start=?,stats_last_bytes=?,updated_at=? WHERE id=?""",
-                    (used, int(new_exceeded), period, last_total, now(), sub["id"]),
-                )
+            period_changed = any(sub["quota_period_start"] != period for sub in rows)
+            if period_changed:
+                conn.execute("UPDATE subscriptions SET direct_used_bytes=0,used_bytes=0,quota_exceeded=0")
+                conn.execute("UPDATE activation_codes SET parent_period_bytes=0")
+                changed = True
+
             children = conn.execute(
                 "SELECT * FROM activation_codes WHERE status='active' ORDER BY id"
             ).fetchall()
@@ -299,13 +327,61 @@ def collect_xray_traffic(rebuild_on_change=True):
                     collected += delta
                     last_total = current_total
                 used = int(child["used_bytes"] or 0) + delta
+                parent_period_bytes = int(child["parent_period_bytes"] or 0) + delta
                 exceeded = used >= float(child["quota_gb"]) * GIB
                 if exceeded != bool(child["quota_exceeded"]):
                     changed = True
                 conn.execute(
-                    "UPDATE activation_codes SET used_bytes=?,stats_last_bytes=?,quota_exceeded=? WHERE id=?",
-                    (used, last_total, int(exceeded), child["id"]),
+                    """UPDATE activation_codes SET used_bytes=?,parent_period_bytes=?,
+                       stats_last_bytes=?,quota_exceeded=? WHERE id=?""",
+                    (used, parent_period_bytes, last_total, int(exceeded), child["id"]),
                 )
+
+            for sub in rows:
+                direct_used = 0 if period_changed else int(sub["direct_used_bytes"] or 0)
+                old_exceeded = bool(sub["quota_exceeded"])
+                email = f"sub-{sub['id']}@proxy.local"
+                last_total = int(sub["stats_last_bytes"] or 0)
+                current_total = totals.get(email)
+                delta = 0
+                if current_total is not None:
+                    delta = current_total - last_total if current_total >= last_total else current_total
+                    collected += delta
+                    last_total = current_total
+                direct_used += delta
+                child_period = conn.execute(
+                    """SELECT COALESCE(SUM(a.parent_period_bytes),0) FROM activation_codes a
+                       JOIN secondary_plans p ON p.id=a.plan_id WHERE p.parent_subscription_id=?""",
+                    (sub["id"],),
+                ).fetchone()[0]
+                used = direct_used + int(child_period or 0)
+                new_exceeded = used >= float(sub["quota_gb"]) * GIB
+                if new_exceeded != old_exceeded:
+                    changed = True
+                conn.execute(
+                    """UPDATE subscriptions SET used_bytes=?,direct_used_bytes=?,quota_exceeded=?,
+                       quota_period_start=?,stats_last_bytes=?,updated_at=? WHERE id=?""",
+                    (used, direct_used, int(new_exceeded), period, last_total, now(), sub["id"]),
+                )
+
+            server = server_traffic_status(conn)
+            old_server_exceeded = server["exceeded"]
+            server_used = server["used_bytes"]
+            if server["period_start"] != period:
+                server_used = 0
+            server_used += collected
+            conn.execute(
+                "INSERT INTO settings(key,value) VALUES('server_traffic_used_bytes',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(server_used),),
+            )
+            conn.execute(
+                "INSERT INTO settings(key,value) VALUES('server_traffic_period_start',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (period,),
+            )
+            if (server_used >= server["quota_bytes"]) != old_server_exceeded:
+                changed = True
 
         if changed and rebuild_on_change:
             rebuild_xray(collect_stats=False)
@@ -381,13 +457,14 @@ def xray_config():
                FROM activation_codes a JOIN secondary_plans p ON p.id=a.plan_id
                JOIN subscriptions s ON s.id=p.parent_subscription_id
                WHERE a.status='active' AND a.quota_exceeded=0 AND a.expires_at>?
-                 AND s.enabled=1 ORDER BY a.id""",
+                 AND s.enabled=1 AND s.quota_exceeded=0 ORDER BY a.id""",
             (now(),),
         ).fetchall()
         socks_rows = conn.execute("SELECT * FROM socks WHERE status='active' ORDER BY id").fetchall()
         links = conn.execute(
             "SELECT subscription_id,socks_id FROM subscription_socks ORDER BY position,socks_id"
         ).fetchall()
+        server_traffic = server_traffic_status(conn)
     active_ids = {r["id"] for r in socks_rows}
     assigned = {}
     for link in links:
@@ -396,6 +473,8 @@ def xray_config():
 
     users_vless = []
     users_trojan = []
+    main_emails = []
+    child_emails = []
     # Wi-Fi Calling IKE/IPsec must leave through the London host because the
     # selected SOCKS5 exits are TCP-only.
     rules = [
@@ -412,6 +491,7 @@ def xray_config():
     limited_children = []
     for sub in subs:
         email = f"sub-{sub['id']}@proxy.local"
+        main_emails.append((sub["id"], email))
         users_vless.append({"id": sub["vless_uuid"], "email": email})
         users_trojan.append({"password": sub["trojan_password"], "email": email})
         if sub["quota_exceeded"]:
@@ -420,7 +500,12 @@ def xray_config():
                 {"type": "field", "network": "tcp", "user": [email], "outboundTag": f"limited-sub-{sub['id']}"}
             )
         ids = assigned.get(sub["id"], [])[:3]
-        if ids:
+        if len(ids) == 1:
+            # A single selected SOCKS5 is pinned directly.  This avoids the
+            # observatory warm-up window falling back to the server IP after a
+            # user explicitly switches exits.
+            rules.append({"type": "field", "user": [email], "outboundTag": f"socks-{ids[0]}"})
+        elif ids:
             tag = f"balancer-sub-{sub['id']}"
             # Prefer the lowest-latency healthy exit.  This avoids sending every
             # other connection through a temporarily slow SOCKS server while
@@ -463,33 +548,33 @@ def xray_config():
 
     for child in children:
         email = f"child-{child['id']}@proxy.local"
+        child_emails.append((child["id"], email))
         users_vless.append({"id": child["vless_uuid"], "email": email})
         users_trojan.append({"password": child["trojan_password"], "email": email})
         limited_children.append(child["id"])
         rules.append(
             {"type": "field", "network": "tcp", "user": [email], "outboundTag": f"limited-child-{child['id']}"}
         )
-        ids = assigned.get(child["parent_subscription_id"], [])[:3]
-        if ids:
-            tag = f"balancer-child-{child['id']}"
-            ranked_ids = sorted(
-                ids,
-                key=lambda socks_id: next(
-                    (row["latency_ms"] or 999999 for row in socks_rows if row["id"] == socks_id),
-                    999999,
-                ),
-            )
-            balancers.append(
-                {
-                    "tag": tag,
-                    "selector": [f"socks-{sid}" for sid in ranked_ids],
-                    "fallbackTag": "uk-direct",
-                    "strategy": {"type": "leastLoad", "settings": {"expected": 1, "maxRTT": "1s"}},
-                }
-            )
-            rules.append({"type": "field", "user": [email], "balancerTag": tag})
+
+    if server_traffic["exceeded"]:
+        global_rules = []
+        if server_traffic["action"] == "disconnect":
+            for _, email in main_emails + child_emails:
+                global_rules.append({"type": "field", "user": [email], "outboundTag": "blocked"})
         else:
-            rules.append({"type": "field", "user": [email], "outboundTag": "uk-direct"})
+            for sub_id, email in main_emails:
+                global_rules.append({
+                    "type": "field", "network": "tcp", "user": [email],
+                    "outboundTag": f"server-limit-sub-{sub_id}",
+                })
+            for child_id, email in child_emails:
+                global_rules.append({
+                    "type": "field", "network": "tcp", "user": [email],
+                    "outboundTag": f"server-limit-child-{child_id}",
+                })
+        # Keep Wi-Fi Calling's London UDP route first; enforce the server-wide
+        # policy before every per-account route.
+        rules[1:1] = global_rules
 
     outbounds = [
         {"tag": "blocked", "protocol": "blackhole", "settings": {}},
@@ -521,6 +606,29 @@ def xray_config():
                 },
             }
         )
+    if server_traffic["exceeded"] and server_traffic["action"] == "limit":
+        for sub_id, _ in main_emails:
+            outbounds.append(
+                {
+                    "tag": f"server-limit-sub-{sub_id}",
+                    "protocol": "socks",
+                    "settings": {
+                        "address": "127.0.0.1", "port": 11080,
+                        "user": f"server-sub-{sub_id}", "pass": "local-quota-limiter",
+                    },
+                }
+            )
+        for child_id, _ in child_emails:
+            outbounds.append(
+                {
+                    "tag": f"server-limit-child-{child_id}",
+                    "protocol": "socks",
+                    "settings": {
+                        "address": "127.0.0.1", "port": 11080,
+                        "user": f"server-child-{child_id}", "pass": "local-quota-limiter",
+                    },
+                }
+            )
     for row in socks_rows:
         settings = {"address": row["host"], "port": row["port"]}
         username = decrypt(row["username_enc"])
@@ -546,6 +654,17 @@ def xray_config():
                 "protocol": "vless",
                 "settings": {"users": users_vless, "decryption": "none"},
                 "streamSettings": {"method": "websocket", "security": "none", "wsSettings": {"path": "/vless"}},
+            },
+            {
+                "tag": "vless-xhttp-in",
+                "listen": "127.0.0.1",
+                "port": 10003,
+                "protocol": "vless",
+                "settings": {"users": users_vless, "decryption": "none"},
+                "streamSettings": {
+                    "method": "xhttp", "security": "none",
+                    "xhttpSettings": {"path": "/xhttp", "mode": "auto"},
+                },
             },
             {
                 "tag": "trojan-in",
@@ -646,18 +765,24 @@ def check_subscriptions():
 def subscription_text(sub):
     label = urllib.parse.quote(sub["name"], safe="")
     host = NODE_DOMAIN
-    common = f"security=tls&allowInsecure=0&type=ws&host={urllib.parse.quote(host, safe='')}&sni={urllib.parse.quote(host, safe='')}&fp=chrome"
-    vless = f"vless://{sub['vless_uuid']}@{host}:443?encryption=none&{common}&path=%2Fvless&packetEncoding=xudp#{label}-VLESS"
-    trojan = f"trojan://{urllib.parse.quote(sub['trojan_password'], safe='')}@{host}:443?{common}&path=%2Ftrojan#{label}-Trojan"
-    raw = f"{vless}\n{trojan}\n"
+    encoded_host = urllib.parse.quote(host, safe="")
+    tls = f"security=tls&allowInsecure=0&host={encoded_host}&sni={encoded_host}&fp=chrome"
+    xhttp = (
+        f"vless://{sub['vless_uuid']}@{host}:443?encryption=none&{tls}"
+        f"&type=xhttp&path=%2Fxhttp&mode=auto&alpn=h2&packetEncoding=xudp#{label}-VLESS-XHTTP"
+    )
+    vless = f"vless://{sub['vless_uuid']}@{host}:443?encryption=none&{tls}&type=ws&path=%2Fvless&packetEncoding=xudp#{label}-VLESS-WS"
+    trojan = f"trojan://{urllib.parse.quote(sub['trojan_password'], safe='')}@{host}:443?{tls}&type=ws&path=%2Ftrojan#{label}-Trojan-WS"
+    raw = f"{xhttp}\n{vless}\n{trojan}\n"
     return base64.b64encode(raw.encode()).decode()
 
 
 def clash_subscription_text(sub):
     """Return a Mihomo/Clash Meta profile for Clash Verge and compatible apps."""
     host = NODE_DOMAIN
-    vless_name = f"{sub['name']}-VLESS"
-    trojan_name = f"{sub['name']}-Trojan"
+    xhttp_name = f"{sub['name']}-VLESS-XHTTP"
+    vless_name = f"{sub['name']}-VLESS-WS"
+    trojan_name = f"{sub['name']}-Trojan-WS"
 
     def quoted(value):
         # A JSON string is also a valid YAML scalar and safely handles names,
@@ -675,6 +800,23 @@ find-process-mode: strict
 global-client-fingerprint: chrome
 
 proxies:
+  - name: {quoted(xhttp_name)}
+    type: vless
+    server: {quoted(host)}
+    port: 443
+    uuid: {quoted(sub['vless_uuid'])}
+    network: xhttp
+    tls: true
+    udp: true
+    servername: {quoted(host)}
+    client-fingerprint: chrome
+    packet-encoding: xudp
+    alpn:
+      - h2
+    xhttp-opts:
+      path: /xhttp
+      host: {quoted(host)}
+      mode: auto
   - name: {quoted(vless_name)}
     type: vless
     server: {quoted(host)}
@@ -710,6 +852,7 @@ proxy-groups:
   - name: PROXY
     type: fallback
     proxies:
+      - {quoted(xhttp_name)}
       - {quoted(vless_name)}
       - {quoted(trojan_name)}
     url: https://www.gstatic.com/generate_204

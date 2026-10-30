@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}概览 · Proxy Panel{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>运行概览</h1><p>代理池、订阅和自动检测的当前状态。</p></div></div>
+<div class="page-head"><div><h1>运行概览</h1><p>代理池、订阅和自动检测的当前状态。</p></div><aside class="server-meter compact"><div><span>服务器本月总流量</span><b>{{ server_traffic.used_bytes|traffic_tb }} / {{ '%g'|format(server_traffic.quota_tb) }} TB</b></div><progress max="{{ server_traffic.quota_bytes }}" value="{{ server_traffic.used_bytes }}"></progress><small>{{ server_traffic.percent }}% · 达到后{{ '断开代理' if server_traffic.action == 'disconnect' else '限速 ' ~ server_traffic.limit_mbps ~ ' Mbps' }}</small></aside></div>
 <div class="stats">
   <a class="stat" href="{{ url_for('socks_page') }}"><b>{{ socks|length }}</b><span>SOCKS5 / 30</span></a>
   <a class="stat" href="{{ url_for('socks_page') }}"><b>{{ socks|selectattr('status','equalto','active')|list|length }}</b><span>健康出口</span></a>

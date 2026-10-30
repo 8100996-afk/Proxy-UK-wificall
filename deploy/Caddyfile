@@ -25,6 +25,10 @@ __NODE_DOMAIN__ {
 	handle @vless {
 		reverse_proxy 127.0.0.1:10001
 	}
+	@xhttp path /xhttp*
+	handle @xhttp {
+		reverse_proxy 127.0.0.1:10003
+	}
 	@trojan path /trojan*
 	handle @trojan {
 		reverse_proxy 127.0.0.1:10002

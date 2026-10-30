@@ -5,11 +5,12 @@
 ## 功能
 
 - 最多管理 30 个 SOCKS5 出口，定时检测、故障停用与自动清理；
-- 每个主订阅选择最多 3 个出口，全部失效时回落服务器公网 IP；
-- 生成 VLESS、Trojan、Base64 通用订阅和 Clash/Mihomo YAML；
+- 每个主订阅通过弹窗选择最多 3 个出口；单出口直接固定，多出口按实测延迟轮换，全部失效时回落服务器公网 IP；
+- 生成优先使用 VLESS XHTTP（TLS/HTTP2）的节点，并保留 VLESS/Trojan WebSocket 兼容回退、Base64 通用订阅和 Clash/Mihomo YAML；
 - EE、Three UK、Vodafone UK 的 UDP 500/4500 健康监控；
-- 每月流量额度与只读累计计数，避免重置统计干扰 UDP 会话；
-- 二级订阅、10–100 Mbps 独立限速、批量激活码、网页兑换与凭码找回；
+- 主订阅与三级账号共享每月额度，显示实际用量和已分配额度，额度不足时阻止超额生成激活码；
+- 服务器总出口流量默认 2 TB，可修改阈值并选择达量断开或全局限速；
+- 二级订阅、10–100 Mbps 独立限速、批量激活码、前后四位搜索、批量复制/删除、网页兑换与凭码找回；
 - 激活后开始计时，到期自动物理删除；
 - 英国和新加坡双时区显示；
 - Caddy 自动 HTTPS、systemd 服务与定时任务。
@@ -21,8 +22,8 @@
 - 一个已托管到 Cloudflare 的新域名，例如 `example.com`。安装程序会自动使用：
   - `panel.example.com`：管理后台
   - `sub.example.com`：订阅和兑换页
-  - `node.example.com`：VLESS/Trojan WebSocket 节点
-- Cloudflare 可使用 DNS only 或代理模式；节点需要支持 WebSocket。
+  - `node.example.com`：VLESS XHTTP 及兼容回退节点
+- Cloudflare 可使用 DNS only 或代理模式；节点需要支持 HTTP/2 与 WebSocket。
 
 > Wi‑Fi Calling 是否注册成功还取决于运营商、SIM 权限、设备和服务器出口 IP。端口检测成功不等同于运营商一定允许 EAP-AKA 注册。
 
@@ -47,7 +48,7 @@ sudo ./install.sh
 | --- | --- | --- | --- |
 | A | panel | 203.0.113.10 | 可开启代理 |
 | A | sub | 203.0.113.10 | 可开启代理 |
-| A | node | 203.0.113.10 | 可开启代理（WebSocket） |
+| A | node | 203.0.113.10 | 可开启代理（XHTTP/HTTP2 与 WebSocket 回退） |
 
 也可以先全部设为 DNS only，确认 Caddy 成功签发证书后再开启代理。Cloudflare 的 SSL/TLS 模式建议使用 `Full (strict)`。首次申请证书时请确认 TCP 80/443 可从公网访问，并避免缓存 `/s/*`、`/c/*`、`/redeem`。
 

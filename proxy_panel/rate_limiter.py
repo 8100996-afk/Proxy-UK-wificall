@@ -3,7 +3,7 @@ import socket
 import struct
 import time
 
-from .core import db, decrypt, init_db
+from .core import db, decrypt, get_setting, init_db
 
 
 class Bucket:
@@ -78,12 +78,34 @@ def upstreams(sub_id):
 
 def account_info(username):
     with db() as conn:
+        if username.startswith("server-sub-"):
+            sub_id = int(username[11:])
+            row = conn.execute(
+                "SELECT id FROM subscriptions WHERE id=? AND enabled=1", (sub_id,)
+            ).fetchone()
+            speed = max(1, int(get_setting("server_traffic_limit_mbps") or 10))
+            return (sub_id, [("server-global", speed)]) if row else None
+        if username.startswith("server-child-"):
+            child_id = int(username[13:])
+            row = conn.execute(
+                """SELECT p.parent_subscription_id,a.speed_mbps FROM activation_codes a
+                   JOIN secondary_plans p ON p.id=a.plan_id
+                   WHERE a.id=? AND a.status='active' AND a.quota_exceeded=0 AND a.expires_at>?""",
+                (child_id, time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())),
+            ).fetchone()
+            if not row:
+                return None
+            server_speed = max(1, int(get_setting("server_traffic_limit_mbps") or 10))
+            return row["parent_subscription_id"], [
+                ("server-global", server_speed),
+                (f"child-{child_id}", int(row["speed_mbps"])),
+            ]
         if username.startswith("sub-"):
             sub_id = int(username[4:])
             row = conn.execute(
                 "SELECT id FROM subscriptions WHERE id=? AND enabled=1", (sub_id,)
             ).fetchone()
-            return (sub_id, 10) if row else None
+            return (sub_id, [(username, 10)]) if row else None
         if username.startswith("child-"):
             child_id = int(username[6:])
             row = conn.execute(
@@ -92,7 +114,7 @@ def account_info(username):
                    WHERE a.id=? AND a.status='active' AND a.quota_exceeded=0 AND a.expires_at>?""",
                 (child_id, time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())),
             ).fetchone()
-            return (row["parent_subscription_id"], row["speed_mbps"]) if row else None
+            return (row["parent_subscription_id"], [(username, row["speed_mbps"])]) if row else None
     return None
 
 
@@ -128,10 +150,11 @@ async def open_target(sub_id, host, port):
     return await asyncio.wait_for(asyncio.open_connection(host, port), 10)
 
 
-async def relay(reader, writer, bucket):
+async def relay(reader, writer, rate_buckets):
     try:
         while data := await reader.read(65536):
-            await bucket.consume(len(data))
+            for bucket in rate_buckets:
+                await bucket.consume(len(data))
             writer.write(data)
             await writer.drain()
     finally:
@@ -156,7 +179,7 @@ async def handle(client_reader, client_writer):
         if not info or password != "local-quota-limiter":
             client_writer.write(b"\x01\x01")
             return
-        sub_id, speed_mbps = info
+        sub_id, bucket_specs = info
         client_writer.write(b"\x01\x00")
         await client_writer.drain()
         request = await client_reader.readexactly(4)
@@ -167,13 +190,15 @@ async def handle(client_reader, client_writer):
         remote_reader, remote_writer = await open_target(sub_id, host, port)
         client_writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
         await client_writer.drain()
-        bucket_key = username
-        bucket = buckets.get(bucket_key)
-        if not bucket or bucket.speed_mbps != speed_mbps:
-            bucket = buckets[bucket_key] = Bucket(speed_mbps)
+        rate_buckets = []
+        for bucket_key, speed_mbps in bucket_specs:
+            bucket = buckets.get(bucket_key)
+            if not bucket or bucket.speed_mbps != speed_mbps:
+                bucket = buckets[bucket_key] = Bucket(speed_mbps)
+            rate_buckets.append(bucket)
         await asyncio.gather(
-            relay(client_reader, remote_writer, bucket),
-            relay(remote_reader, client_writer, bucket),
+            relay(client_reader, remote_writer, rate_buckets),
+            relay(remote_reader, client_writer, rate_buckets),
             return_exceptions=True,
         )
     except Exception:
