@@ -74,6 +74,10 @@ def test_routes_exit_switch_and_parent_quota(monkeypatch):
         assert b"DST-PORT,4500,PROXY" in wifi_profile.data
         assert b"MATCH,DIRECT" in wifi_profile.data
         assert client.post(
+            f"/wifi-access/{wifi_id}/speed",
+            data={"csrf": "test-csrf", "speed_mbps": "50"},
+        ).status_code == 302
+        assert client.post(
             f"/subscriptions/{sub_id}/exits",
             data={"csrf": "test-csrf", "socks_id": str(sock_id)},
         ).status_code == 302
@@ -93,7 +97,7 @@ def test_routes_exit_switch_and_parent_quota(monkeypatch):
         and rule.get("network") == "udp" and rule.get("outboundTag") == "blocked"
         for rule in config["routing"]["rules"]
     )
-    assert account_info(f"wifi-{wifi_id}")[1] == [(f"wifi-{wifi_id}", 5)]
+    assert account_info(f"wifi-{wifi_id}")[1] == [(f"wifi-{wifi_id}", 50)]
     assert any(
         rule.get("user") == [f"wifi-{wifi_id}@proxy.local"]
         and rule.get("port") == "500,4500"

@@ -195,7 +195,7 @@ nav a.current {
   margin: 0;
 }
 
-.wifi-access-form {display:grid;grid-template-columns:1fr auto auto;gap:14px;align-items:end}
+.wifi-access-form {display:grid;grid-template-columns:1fr 220px auto auto;gap:14px;align-items:end}
 .policy-chip {display:grid;gap:2px;padding:8px 14px;border:1px solid #315a4b;border-radius:10px;background:#0c211a;min-width:190px}
 .policy-chip b,.speed-badge {color:#65efb2}
 .policy-chip span,.scope-note {color:var(--muted);font-size:12px}
@@ -206,6 +206,8 @@ nav a.current {
 .wifi-access-meta {margin:15px 0 0}
 .wifi-access-meta>div {display:flex;justify-content:space-between;gap:16px;padding:7px 0;border-bottom:1px solid #222d40}
 .wifi-access-meta dd {margin:0;text-align:right}
+.wifi-speed-form {margin-top:14px!important;align-items:end}
+.wifi-speed-form small {color:var(--muted);align-self:center}
 @media(max-width:850px){.wifi-access-form{grid-template-columns:1fr}.wifi-access-form button{width:100%}}
 
 .carrier-title {

@@ -15,6 +15,14 @@ class Bucket:
         self.updated = time.monotonic()
         self.lock = asyncio.Lock()
 
+    def set_speed(self, speed_mbps):
+        if self.speed_mbps == speed_mbps:
+            return
+        self.speed_mbps = speed_mbps
+        self.rate = speed_mbps * 1_000_000 / 8
+        self.capacity = self.rate / 2
+        self.tokens = min(self.tokens, self.capacity)
+
     async def consume(self, amount):
         while True:
             async with self.lock:
@@ -29,6 +37,28 @@ class Bucket:
 
 
 buckets = {}
+
+
+def enabled_wifi_speeds():
+    with db() as conn:
+        return {
+            f"wifi-{row['id']}": int(row["speed_mbps"])
+            for row in conn.execute("SELECT id,speed_mbps FROM wifi_access WHERE enabled=1")
+        }
+
+
+async def refresh_wifi_bucket_speeds():
+    """Apply admin speed changes without restarting active UDP associations."""
+    while True:
+        await asyncio.sleep(5)
+        try:
+            speeds = await asyncio.to_thread(enabled_wifi_speeds)
+            for key, speed in speeds.items():
+                bucket = buckets.get(key)
+                if bucket:
+                    bucket.set_speed(speed)
+        except Exception:
+            continue
 
 
 async def read_address(reader, atyp):
@@ -305,8 +335,10 @@ async def handle(client_reader, client_writer):
         rate_buckets = []
         for bucket_key, speed_mbps in bucket_specs:
             bucket = buckets.get(bucket_key)
-            if not bucket or bucket.speed_mbps != speed_mbps:
+            if not bucket:
                 bucket = buckets[bucket_key] = Bucket(speed_mbps)
+            elif bucket.speed_mbps != speed_mbps:
+                bucket.set_speed(speed_mbps)
             rate_buckets.append(bucket)
         if request[1] == 3:
             await udp_associate(client_reader, client_writer, rate_buckets)
@@ -335,9 +367,14 @@ async def handle(client_reader, client_writer):
 
 async def main_async():
     init_db()
+    refresh_task = asyncio.create_task(refresh_wifi_bucket_speeds())
     server = await asyncio.start_server(handle, "127.0.0.1", 11080)
-    async with server:
-        await server.serve_forever()
+    try:
+        async with server:
+            await server.serve_forever()
+    finally:
+        refresh_task.cancel()
+        await asyncio.gather(refresh_task, return_exceptions=True)
 
 
 if __name__ == "__main__":

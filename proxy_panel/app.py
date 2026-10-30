@@ -644,8 +644,12 @@ def create_app():
     @login_required
     def wifi_access_add():
         name = request.form.get("name", "").strip()
-        if not name or len(name) > 80:
-            flash("专线名称不能为空，且不能超过 80 个字符", "error")
+        try:
+            speed_mbps = int(request.form.get("speed_mbps", "50"))
+        except ValueError:
+            speed_mbps = 0
+        if not name or len(name) > 80 or not 5 <= speed_mbps <= 200:
+            flash("专线名称不能为空，速度必须在 5–200 Mbps", "error")
             return redirect(url_for("wifi_access_page"))
         token, vless_uuid, trojan_password = new_subscription_values()
         try:
@@ -655,15 +659,39 @@ def create_app():
                     return redirect(url_for("wifi_access_page"))
                 conn.execute(
                     """INSERT INTO wifi_access(name,token,vless_uuid,trojan_password,speed_mbps,
-                       created_at,updated_at) VALUES(?,?,?,?,5,?,?)""",
-                    (name, token, vless_uuid, trojan_password, now(), now()),
+                       created_at,updated_at) VALUES(?,?,?,?,?,?,?)""",
+                    (name, token, vless_uuid, trojan_password, speed_mbps, now(), now()),
                 )
         except sqlite3.IntegrityError:
             flash("专线名称已存在，请换一个名称", "error")
             return redirect(url_for("wifi_access_page"))
         schedule_rebuild()
-        add_event("success", f"创建 WiFi Call 专线 {name}（固定 5 Mbps）")
+        add_event("success", f"创建 WiFi Call 专线 {name}（{speed_mbps} Mbps）")
         flash("WiFi Call 专线已创建；约 3 秒后生效", "success")
+        return redirect(url_for("wifi_access_page"))
+
+    @app.post("/wifi-access/<int:account_id>/speed")
+    @login_required
+    def wifi_access_speed(account_id):
+        try:
+            speed_mbps = int(request.form.get("speed_mbps", "0"))
+        except ValueError:
+            speed_mbps = 0
+        if not 5 <= speed_mbps <= 200:
+            flash("专线速度必须在 5–200 Mbps", "error")
+            return redirect(url_for("wifi_access_page"))
+        with db() as conn:
+            row = conn.execute("SELECT name FROM wifi_access WHERE id=?", (account_id,)).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE wifi_access SET speed_mbps=?,updated_at=? WHERE id=?",
+                    (speed_mbps, now(), account_id),
+                )
+        if not row:
+            flash("WiFi Call 专线不存在", "error")
+        else:
+            add_event("info", f"WiFi Call 专线 {row['name']} 调整为 {speed_mbps} Mbps")
+            flash(f"专线速度已热更新为 {speed_mbps} Mbps，无需重启", "success")
         return redirect(url_for("wifi_access_page"))
 
     @app.post("/wifi-access/<int:account_id>/toggle")
