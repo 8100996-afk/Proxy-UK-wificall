@@ -11,6 +11,7 @@ from functools import wraps
 from zoneinfo import ZoneInfo
 
 from flask import Flask, Response, flash, redirect, render_template, request, session, url_for
+from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .core import (
@@ -77,7 +78,12 @@ def create_app():
             parsed = parsed.replace(tzinfo=timezone.utc)
         london = parsed.astimezone(ZoneInfo("Europe/London"))
         singapore = parsed.astimezone(ZoneInfo("Asia/Singapore"))
-        return f"英国 {london:%Y-%m-%d %H:%M:%S %Z} · 新加坡 {singapore:%Y-%m-%d %H:%M:%S SGT}"
+        return Markup(
+            '<span class="dual-time-stack">'
+            f'<span><b>英国</b><i>{london:%Y-%m-%d %H:%M:%S %Z}</i></span>'
+            f'<span><b>新加坡</b><i>{singapore:%Y-%m-%d %H:%M:%S SGT}</i></span>'
+            '</span>'
+        )
 
     @app.template_filter("traffic_gb")
     def traffic_gb(value):
