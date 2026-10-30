@@ -18,6 +18,7 @@ from .core import (
     clash_subscription_text,
     check_one,
     db,
+    decrypt,
     encrypt,
     get_setting,
     init_db,
