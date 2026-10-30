@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Proxy Panel{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='pages.css') }}?v=20261030-2">
+  <link rel="stylesheet" href="{{ url_for('static', filename='pages.css') }}?v=20261030-3">
 </head>
 <body>
   <header>
@@ -19,6 +19,7 @@
       <a class="{{ 'current' if request.endpoint == 'activation_codes_page' else '' }}" href="{{ url_for('activation_codes_page') }}">激活码</a>
       <a class="{{ 'current' if request.endpoint == 'secondary_accounts_page' else '' }}" href="{{ url_for('secondary_accounts_page') }}">三级账号</a>
       <a class="{{ 'current' if request.endpoint == 'wifi_calling_page' else '' }}" href="{{ url_for('wifi_calling_page') }}">Wi‑Fi Call</a>
+      <a class="{{ 'current' if request.endpoint == 'wifi_access_page' else '' }}" href="{{ url_for('wifi_access_page') }}">WiFi 专线</a>
       <a class="{{ 'current' if request.endpoint == 'settings_page' else '' }}" href="{{ url_for('settings_page') }}">设置</a>
     </nav>
     <div class="dual-clock" id="dual-clock"><span>英国 --:--</span><span>新加坡 --:--</span></div>

@@ -78,6 +78,15 @@ def upstreams(sub_id):
 
 def account_info(username):
     with db() as conn:
+        if username.startswith("wifi-"):
+            try:
+                account_id = int(username[5:])
+            except ValueError:
+                return None
+            row = conn.execute(
+                "SELECT id,speed_mbps FROM wifi_access WHERE id=? AND enabled=1", (account_id,)
+            ).fetchone()
+            return (None, [(username, int(row["speed_mbps"]))]) if row else None
         if username.startswith("server-sub-"):
             sub_id = int(username[11:])
             row = conn.execute(
@@ -177,6 +186,96 @@ async def relay(reader, writer, rate_buckets):
         writer.close()
 
 
+def decode_udp_packet(data):
+    if len(data) < 7 or data[:3] != b"\x00\x00\x00":
+        raise ValueError("invalid SOCKS5 UDP packet")
+    atyp = data[3]
+    offset = 4
+    if atyp == 1:
+        if len(data) < offset + 4 + 2:
+            raise ValueError("short IPv4 packet")
+        host = socket.inet_ntoa(data[offset:offset + 4])
+        offset += 4
+    elif atyp == 3:
+        length = data[offset]
+        offset += 1
+        if len(data) < offset + length + 2:
+            raise ValueError("short domain packet")
+        host = data[offset:offset + length].decode("idna")
+        offset += length
+    elif atyp == 4:
+        if len(data) < offset + 16 + 2:
+            raise ValueError("short IPv6 packet")
+        host = socket.inet_ntop(socket.AF_INET6, data[offset:offset + 16])
+        offset += 16
+    else:
+        raise ValueError("invalid address type")
+    port = struct.unpack("!H", data[offset:offset + 2])[0]
+    return host, port, data[offset + 2:]
+
+
+async def consume_all(rate_buckets, amount):
+    for bucket in rate_buckets:
+        await bucket.consume(amount)
+
+
+async def udp_associate(client_reader, client_writer, rate_buckets):
+    """Relay one authenticated SOCKS5 UDP association on loopback only."""
+    loop = asyncio.get_running_loop()
+    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp_socket.setblocking(False)
+    udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+    udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
+    udp_socket.bind(("127.0.0.1", 0))
+    bound_host, bound_port = udp_socket.getsockname()
+    client_writer.write(
+        b"\x05\x00\x00" + encoded_address(bound_host) + struct.pack("!H", bound_port)
+    )
+    await client_writer.drain()
+
+    tcp_closed = asyncio.create_task(client_reader.read(1))
+    client_address = None
+    try:
+        while True:
+            udp_received = asyncio.create_task(loop.sock_recvfrom(udp_socket, 65535))
+            done, _ = await asyncio.wait(
+                {tcp_closed, udp_received}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if tcp_closed in done:
+                udp_received.cancel()
+                await asyncio.gather(udp_received, return_exceptions=True)
+                break
+            data, source = udp_received.result()
+            if client_address is None:
+                if not source[0].startswith("127."):
+                    continue
+                client_address = source
+            if source == client_address:
+                try:
+                    host, port, payload = decode_udp_packet(data)
+                    # Defence in depth: this private relay can never be used as
+                    # a general-purpose UDP proxy even if routing is misconfigured.
+                    if port not in (500, 4500) or not payload:
+                        continue
+                    addresses = await loop.getaddrinfo(
+                        host, port, family=socket.AF_INET, type=socket.SOCK_DGRAM
+                    )
+                    destination = addresses[0][4]
+                    await consume_all(rate_buckets, len(payload))
+                    await loop.sock_sendto(udp_socket, payload, destination)
+                except (OSError, ValueError, UnicodeError):
+                    continue
+            else:
+                await consume_all(rate_buckets, len(data))
+                response = b"\x00\x00\x00" + encoded_address(source[0])
+                response += struct.pack("!H", source[1]) + data
+                await loop.sock_sendto(udp_socket, response, client_address)
+    finally:
+        tcp_closed.cancel()
+        await asyncio.gather(tcp_closed, return_exceptions=True)
+        udp_socket.close()
+
+
 async def handle(client_reader, client_writer):
     remote_writer = None
     try:
@@ -199,19 +298,24 @@ async def handle(client_reader, client_writer):
         client_writer.write(b"\x01\x00")
         await client_writer.drain()
         request = await client_reader.readexactly(4)
-        if request[:3] != b"\x05\x01\x00":
-            raise OSError("only CONNECT is supported")
+        if request[0] != 5 or request[2] != 0:
+            raise OSError("invalid SOCKS5 request")
         host = await read_address(client_reader, request[3])
         port = struct.unpack("!H", await client_reader.readexactly(2))[0]
-        remote_reader, remote_writer = await open_target(sub_id, host, port)
-        client_writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
-        await client_writer.drain()
         rate_buckets = []
         for bucket_key, speed_mbps in bucket_specs:
             bucket = buckets.get(bucket_key)
             if not bucket or bucket.speed_mbps != speed_mbps:
                 bucket = buckets[bucket_key] = Bucket(speed_mbps)
             rate_buckets.append(bucket)
+        if request[1] == 3:
+            await udp_associate(client_reader, client_writer, rate_buckets)
+            return
+        if request[1] != 1 or sub_id is None:
+            raise OSError("command not permitted")
+        remote_reader, remote_writer = await open_target(sub_id, host, port)
+        client_writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+        await client_writer.drain()
         await asyncio.gather(
             relay(client_reader, remote_writer, rate_buckets),
             relay(remote_reader, client_writer, rate_buckets),

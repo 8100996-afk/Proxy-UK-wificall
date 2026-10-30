@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}WiFi Call 专线 · Proxy Panel{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>WiFi Call 专线</h1><p>给无法直连 UDP 500/4500 的用户使用；每个账号固定 5 Mbps，仅转发 WiFi Calling，不供应网页、下载或测速流量。</p></div><span class="count">{{ accounts|length }} 个</span></div>
+<section class="card wifi-access-create">
+  <div class="section-title"><h2>创建专线账号</h2><span>长期有效 · 可停用 / 重置 / 删除</span></div>
+  <form method="post" action="/wifi-access" class="wifi-access-form">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label>账号名称<input name="name" maxlength="80" placeholder="例如：客户-A-WiFiCall" required></label>
+    <div class="policy-chip"><b>5 Mbps</b><span>只允许 UDP 500 / 4500</span></div>
+    <button type="submit">创建 WiFi Call 专线</button>
+  </form>
+</section>
+<div class="sub-grid">{% for account in accounts %}
+  <article class="sub-card wifi-access-card">
+    <div class="sub-head"><div><h2>{{ account.name }}</h2><span class="badge {{ 'active' if account.enabled else 'disabled' }}">{{ '运行中' if account.enabled else '已停用' }}</span></div><span class="speed-badge">固定 {{ account.speed_mbps }} Mbps</span></div>
+    <p class="scope-note"><b>仅 WiFi Calling</b> · UDP 500 / 4500 · 英国服务器出口 · 其他流量在服务器端拒绝</p>
+    <code class="url">{{ sub_base_url }}/w/{{ account.token }}</code>
+    <div class="actions copy-row">
+      <button class="small" type="button" data-copy="{{ sub_base_url }}/w/{{ account.token }}">复制自动识别</button>
+      <button class="small" type="button" data-copy="{{ sub_base_url }}/w/{{ account.token }}?format=clash">复制 Clash</button>
+      <button class="small" type="button" data-copy="{{ sub_base_url }}/w/{{ account.token }}?format=base64">复制通用订阅</button>
+    </div>
+    <dl class="wifi-access-meta"><div><dt>累计转发</dt><dd>{{ account.used_bytes|traffic_gb }} GB</dd></div><div><dt>创建时间</dt><dd>{{ account.created_at|dual_time }}</dd></div></dl>
+    <div class="actions foot">
+      <form method="post" action="/wifi-access/{{ account.id }}/toggle"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small">{{ '停用' if account.enabled else '启用' }}</button></form>
+      <form method="post" action="/wifi-access/{{ account.id }}/reset" onsubmit="return confirm('旧订阅链接和节点凭据会立即失效，确认重置？')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small warning">重置</button></form>
+      <form method="post" action="/wifi-access/{{ account.id }}/delete" onsubmit="return confirm('永久删除这个 WiFi Call 专线账号？')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="small danger">删除</button></form>
+    </div>
+  </article>
+{% else %}<section class="card empty">还没有 WiFi Call 专线账号。</section>{% endfor %}</div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.querySelectorAll('[data-copy]').forEach(button=>button.addEventListener('click',async()=>{await navigator.clipboard.writeText(button.dataset.copy);button.textContent='已复制';}));
+document.querySelectorAll('form').forEach(form=>form.addEventListener('submit',()=>{if(!form.checkValidity())return;setTimeout(()=>form.querySelectorAll('button[type=submit]').forEach(button=>{button.disabled=true;button.textContent='处理中…';}),0);}));
+</script>
+{% endblock %}

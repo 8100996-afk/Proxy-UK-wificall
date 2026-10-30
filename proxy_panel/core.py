@@ -154,6 +154,21 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_wifi_call_carrier_time
                 ON wifi_call_checks(carrier, checked_at_epoch DESC);
+            CREATE TABLE IF NOT EXISTS wifi_access (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                token TEXT NOT NULL UNIQUE,
+                vless_uuid TEXT NOT NULL,
+                trojan_password TEXT NOT NULL,
+                speed_mbps INTEGER NOT NULL DEFAULT 5,
+                used_bytes INTEGER NOT NULL DEFAULT 0,
+                stats_last_bytes INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_wifi_access_name_nocase
+                ON wifi_access(name COLLATE NOCASE);
             """
         )
         conn.execute(
@@ -364,6 +379,21 @@ def collect_xray_traffic(rebuild_on_change=True):
                     (used, direct_used, int(new_exceeded), period, last_total, now(), sub["id"]),
                 )
 
+            wifi_accounts = conn.execute("SELECT * FROM wifi_access ORDER BY id").fetchall()
+            for account in wifi_accounts:
+                email = f"wifi-{account['id']}@proxy.local"
+                last_total = int(account["stats_last_bytes"] or 0)
+                current_total = totals.get(email)
+                delta = 0
+                if current_total is not None:
+                    delta = current_total - last_total if current_total >= last_total else current_total
+                    collected += delta
+                    last_total = current_total
+                conn.execute(
+                    "UPDATE wifi_access SET used_bytes=used_bytes+?,stats_last_bytes=?,updated_at=? WHERE id=?",
+                    (delta, last_total, now(), account["id"]),
+                )
+
             server = server_traffic_status(conn)
             old_server_exceeded = server["exceeded"]
             server_used = server["used_bytes"]
@@ -464,6 +494,9 @@ def xray_config():
         links = conn.execute(
             "SELECT subscription_id,socks_id FROM subscription_socks ORDER BY position,socks_id"
         ).fetchall()
+        wifi_accounts = conn.execute(
+            "SELECT * FROM wifi_access WHERE enabled=1 ORDER BY id"
+        ).fetchall()
         server_traffic = server_traffic_status(conn)
     active_ids = {r["id"] for r in socks_rows}
     assigned = {}
@@ -475,9 +508,25 @@ def xray_config():
     users_trojan = []
     main_emails = []
     child_emails = []
-    # Wi-Fi Calling IKE/IPsec must leave through the London host because the
-    # selected SOCKS5 exits are TCP-only.
-    rules = [
+    # Dedicated Wi-Fi Calling accounts are deliberately unable to carry web,
+    # downloads, DNS, speed tests or any traffic except IKE/IPsec UDP 500/4500.
+    rules = []
+    for account in wifi_accounts:
+        email = f"wifi-{account['id']}@proxy.local"
+        users_vless.append({"id": account["vless_uuid"], "email": email})
+        users_trojan.append({"password": account["trojan_password"], "email": email})
+        rules.append({
+            "type": "field", "network": "udp", "port": "500,4500",
+            "user": [email], "outboundTag": f"wifi-limit-{account['id']}",
+            "ruleTag": f"wifi-dedicated-{account['id']}",
+        })
+        rules.append({
+            "type": "field", "user": [email], "outboundTag": "blocked",
+            "ruleTag": f"wifi-dedicated-block-{account['id']}",
+        })
+
+    # Normal subscriptions keep their existing London Wi-Fi Calling exception.
+    rules.append(
         {
             "type": "field",
             "network": "udp",
@@ -485,7 +534,8 @@ def xray_config():
             "outboundTag": "uk-direct",
             "ruleTag": "wifi-calling-via-london",
         }
-    ]
+    )
+    wifi_prefix_length = len(rules)
     balancers = []
     parent_routes = {}
     parent_limited = {sub["id"]: bool(sub["quota_exceeded"]) for sub in subs}
@@ -601,12 +651,23 @@ def xray_config():
                 })
         # Keep Wi-Fi Calling's London UDP route first; enforce the server-wide
         # policy before every per-account route.
-        rules[1:1] = global_rules
+        rules[wifi_prefix_length:wifi_prefix_length] = global_rules
 
     outbounds = [
         {"tag": "blocked", "protocol": "blackhole", "settings": {}},
         {"tag": "uk-direct", "protocol": "freedom", "settings": {}},
     ]
+    for account in wifi_accounts:
+        outbounds.append(
+            {
+                "tag": f"wifi-limit-{account['id']}",
+                "protocol": "socks",
+                "settings": {
+                    "address": "127.0.0.1", "port": 11080,
+                    "user": f"wifi-{account['id']}", "pass": "local-quota-limiter",
+                },
+            }
+        )
     for sub_id in limited_subs:
         outbounds.append(
             {
@@ -808,7 +869,7 @@ def subscription_text(sub):
     return base64.b64encode(raw.encode()).decode()
 
 
-def clash_subscription_text(sub):
+def clash_subscription_text(sub, wifi_only=False):
     """Return a Mihomo/Clash Meta profile for Clash Verge and compatible apps."""
     host = NODE_DOMAIN
     xhttp_h3_name = f"{sub['name']}-VLESS-XHTTP-H3"
@@ -821,6 +882,10 @@ def clash_subscription_text(sub):
         # passwords and other user-controlled values without another dependency.
         return json.dumps(str(value), ensure_ascii=False)
 
+    routing_rules = (
+        "  - DST-PORT,500,PROXY\n  - DST-PORT,4500,PROXY\n  - MATCH,DIRECT"
+        if wifi_only else "  - MATCH,PROXY"
+    )
     return f"""mixed-port: 7890
 allow-lan: false
 mode: rule
@@ -913,7 +978,7 @@ proxy-groups:
     expected-status: 204
 
 rules:
-  - MATCH,PROXY
+{routing_rules}
 """
 
 

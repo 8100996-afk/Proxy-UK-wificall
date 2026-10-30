@@ -310,6 +310,13 @@ def create_app():
         latest, history = wifi_call_data()
         return render_template("wifi_calling.html", latest=latest, history=history)
 
+    @app.get("/wifi-access")
+    @login_required
+    def wifi_access_page():
+        with db() as conn:
+            accounts = conn.execute("SELECT * FROM wifi_access ORDER BY id DESC").fetchall()
+        return render_template("wifi_access.html", accounts=accounts)
+
     @app.get("/secondary")
     @login_required
     def secondary_page():
@@ -633,6 +640,77 @@ def create_app():
         flash(f"添加成功，出口 {exit_ip}，延迟 {latency} ms", "success")
         return redirect(url_for("socks_page"))
 
+    @app.post("/wifi-access")
+    @login_required
+    def wifi_access_add():
+        name = request.form.get("name", "").strip()
+        if not name or len(name) > 80:
+            flash("专线名称不能为空，且不能超过 80 个字符", "error")
+            return redirect(url_for("wifi_access_page"))
+        token, vless_uuid, trojan_password = new_subscription_values()
+        try:
+            with db() as conn:
+                if conn.execute("SELECT COUNT(*) FROM wifi_access").fetchone()[0] >= 100:
+                    flash("WiFi Call 专线已达到 100 个上限", "error")
+                    return redirect(url_for("wifi_access_page"))
+                conn.execute(
+                    """INSERT INTO wifi_access(name,token,vless_uuid,trojan_password,speed_mbps,
+                       created_at,updated_at) VALUES(?,?,?,?,5,?,?)""",
+                    (name, token, vless_uuid, trojan_password, now(), now()),
+                )
+        except sqlite3.IntegrityError:
+            flash("专线名称已存在，请换一个名称", "error")
+            return redirect(url_for("wifi_access_page"))
+        schedule_rebuild()
+        add_event("success", f"创建 WiFi Call 专线 {name}（固定 5 Mbps）")
+        flash("WiFi Call 专线已创建；约 3 秒后生效", "success")
+        return redirect(url_for("wifi_access_page"))
+
+    @app.post("/wifi-access/<int:account_id>/toggle")
+    @login_required
+    def wifi_access_toggle(account_id):
+        with db() as conn:
+            updated = conn.execute(
+                "UPDATE wifi_access SET enabled=1-enabled,updated_at=? WHERE id=?",
+                (now(), account_id),
+            ).rowcount
+        if not updated:
+            flash("WiFi Call 专线不存在", "error")
+        else:
+            schedule_rebuild()
+            flash("专线状态已更新", "success")
+        return redirect(url_for("wifi_access_page"))
+
+    @app.post("/wifi-access/<int:account_id>/reset")
+    @login_required
+    def wifi_access_reset(account_id):
+        token, vless_uuid, trojan_password = new_subscription_values()
+        with db() as conn:
+            updated = conn.execute(
+                """UPDATE wifi_access SET token=?,vless_uuid=?,trojan_password=?,
+                   stats_last_bytes=0,updated_at=? WHERE id=?""",
+                (token, vless_uuid, trojan_password, now(), account_id),
+            ).rowcount
+        if not updated:
+            flash("WiFi Call 专线不存在", "error")
+        else:
+            schedule_rebuild()
+            add_event("warning", f"重置 WiFi Call 专线 #{account_id}")
+            flash("专线凭据已重置，旧链接立即失效", "success")
+        return redirect(url_for("wifi_access_page"))
+
+    @app.post("/wifi-access/<int:account_id>/delete")
+    @login_required
+    def wifi_access_delete(account_id):
+        with db() as conn:
+            row = conn.execute("SELECT name FROM wifi_access WHERE id=?", (account_id,)).fetchone()
+            conn.execute("DELETE FROM wifi_access WHERE id=?", (account_id,))
+        if row:
+            schedule_rebuild()
+            add_event("warning", f"删除 WiFi Call 专线 {row['name']}")
+        flash("WiFi Call 专线已删除", "success")
+        return redirect(url_for("wifi_access_page"))
+
     @app.post("/socks/<int:socks_id>/test")
     @login_required
     def socks_test(socks_id):
@@ -902,6 +980,38 @@ def create_app():
                 "Profile-Update-Interval": "1",
                 "Content-Disposition": f'inline; filename="{filename}"',
                 "Cache-Control": "no-store",
+            },
+        )
+
+    @app.get("/w/<token>")
+    def wifi_access_subscription(token):
+        with db() as conn:
+            account = conn.execute(
+                "SELECT * FROM wifi_access WHERE token=? AND enabled=1", (token,)
+            ).fetchone()
+        if not account:
+            return "subscription not found", 404
+        requested_format = request.args.get("format", "").lower()
+        user_agent = request.headers.get("User-Agent", "").lower()
+        wants_clash = requested_format in {"clash", "mihomo", "yaml"} or (
+            not requested_format
+            and any(name in user_agent for name in ("clash", "mihomo", "verge", "stash"))
+        )
+        if wants_clash:
+            body = clash_subscription_text(account, wifi_only=True)
+            content_type, filename = "text/yaml; charset=utf-8", "wifi-call.yaml"
+        else:
+            body = subscription_text(account)
+            content_type, filename = "text/plain; charset=utf-8", "wifi-call.txt"
+        return Response(
+            body,
+            content_type=content_type,
+            headers={
+                "Profile-Title": profile_title(f"{account['name']}-WiFi-Call-Only"),
+                "Profile-Update-Interval": "1",
+                "Content-Disposition": f'inline; filename="{filename}"',
+                "Cache-Control": "no-store",
+                "X-WiFi-Call-Policy": "udp-500-4500-only; rate=5mbps",
             },
         )
 

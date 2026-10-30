@@ -52,6 +52,13 @@ def test_routes_exit_switch_and_parent_quota(monkeypatch):
              "22222222-2222-4222-8222-222222222222", secrets.token_urlsafe(24), created,
              (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(timespec="seconds"), created),
         ).lastrowid
+        wifi_id = conn.execute(
+            """INSERT INTO wifi_access
+               (name,token,vless_uuid,trojan_password,created_at,updated_at)
+               VALUES(?,?,?,?,?,?)""",
+            ("WiFi only", "wifi-test-token", "33333333-3333-4333-8333-333333333333",
+             secrets.token_urlsafe(24), created, created),
+        ).lastrowid
 
     app = panel_app.create_app()
     app.config.update(TESTING=True)
@@ -59,8 +66,13 @@ def test_routes_exit_switch_and_parent_quota(monkeypatch):
         with client.session_transaction() as session:
             session["authenticated"] = True
             session["csrf"] = "test-csrf"
-        for path in ("/", "/socks", "/subscriptions", "/secondary", "/activation-codes", "/secondary-accounts", "/settings", "/wifi-calling"):
+        for path in ("/", "/socks", "/subscriptions", "/secondary", "/activation-codes", "/secondary-accounts", "/settings", "/wifi-calling", "/wifi-access"):
             assert client.get(path).status_code == 200
+        wifi_profile = client.get("/w/wifi-test-token?format=clash")
+        assert wifi_profile.status_code == 200
+        assert b"DST-PORT,500,PROXY" in wifi_profile.data
+        assert b"DST-PORT,4500,PROXY" in wifi_profile.data
+        assert b"MATCH,DIRECT" in wifi_profile.data
         assert client.post(
             f"/subscriptions/{sub_id}/exits",
             data={"csrf": "test-csrf", "socks_id": str(sock_id)},
@@ -79,5 +91,17 @@ def test_routes_exit_switch_and_parent_quota(monkeypatch):
     assert any(
         rule.get("user") == [f"child-{child_id}@proxy.local"]
         and rule.get("network") == "udp" and rule.get("outboundTag") == "blocked"
+        for rule in config["routing"]["rules"]
+    )
+    assert account_info(f"wifi-{wifi_id}")[1] == [(f"wifi-{wifi_id}", 5)]
+    assert any(
+        rule.get("user") == [f"wifi-{wifi_id}@proxy.local"]
+        and rule.get("port") == "500,4500"
+        and rule.get("outboundTag") == f"wifi-limit-{wifi_id}"
+        for rule in config["routing"]["rules"]
+    )
+    assert any(
+        rule.get("user") == [f"wifi-{wifi_id}@proxy.local"]
+        and rule.get("outboundTag") == "blocked"
         for rule in config["routing"]["rules"]
     )
