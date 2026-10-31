@@ -68,6 +68,11 @@ def test_routes_exit_switch_and_parent_quota(monkeypatch):
             session["csrf"] = "test-csrf"
         for path in ("/", "/socks", "/subscriptions", "/secondary", "/activation-codes", "/secondary-accounts", "/settings", "/wifi-calling", "/wifi-access"):
             assert client.get(path).status_code == 200
+        with db() as conn:
+            token = conn.execute("SELECT token FROM subscriptions WHERE id=?", (sub_id,)).fetchone()[0]
+        main_profile = client.get(f"/s/{token}?format=base64")
+        assert main_profile.status_code == 200
+        assert main_profile.headers["Subscription-Userinfo"].startswith("upload=0; download=0; total=")
         wifi_profile = client.get("/w/wifi-test-token?format=clash")
         assert wifi_profile.status_code == 200
         assert b"DST-PORT,500,PROXY" in wifi_profile.data

@@ -1023,6 +1023,13 @@ def create_app():
             headers={
                 "Profile-Title": profile_title(sub["name"]),
                 "Profile-Update-Interval": "1",
+                # Standard subscription metadata consumed by Clash, Mihomo,
+                # Shadowrocket and similar clients.  Main subscriptions reset
+                # monthly, so they intentionally have no fixed expiry date.
+                "Subscription-Userinfo": (
+                    f"upload=0; download={int(sub['used_bytes'] or 0)}; "
+                    f"total={int(float(sub['quota_gb']) * GIB)}; expire=0"
+                ),
                 "Content-Disposition": f'inline; filename="{filename}"',
                 "Cache-Control": "no-store",
             },
