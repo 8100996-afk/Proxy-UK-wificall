@@ -439,7 +439,7 @@ def create_app():
             days = int(request.form.get("valid_days", "30"))
         except ValueError:
             parent_id, speed, quota, days = 0, 0, 0, 0
-        if not name or not 10 <= speed <= 100 or not 0 < quota <= 1_000_000 or not 1 <= days <= 3650:
+        if not name or not 5 <= speed <= 500 or not 0 < quota <= 1_000_000 or not 1 <= days <= 3650:
             flash("名称、速度、流量或有效期不正确", "error")
             return redirect(url_for("secondary_page"))
         with db() as conn:
@@ -465,7 +465,7 @@ def create_app():
             days = int(request.form.get("valid_days", "0"))
         except ValueError:
             parent_id, speed, quota, days = 0, 0, 0, 0
-        if not name or not 10 <= speed <= 100 or quota <= 0 or not 1 <= days <= 3650:
+        if not name or not 5 <= speed <= 500 or quota <= 0 or not 1 <= days <= 3650:
             flash("修改值不正确", "error")
             return redirect(url_for("secondary_page"))
         with db() as conn:
@@ -498,7 +498,7 @@ def create_app():
         if not prefix_valid:
             flash("自定义前4位必须是 4 位英文字母或数字", "error")
             return redirect(url_for("activation_codes_page"))
-        if not 1 <= count <= 500 or not 10 <= speed <= 100 or quota <= 0 or not 1 <= days <= 3650:
+        if not 1 <= count <= 500 or not 5 <= speed <= 500 or quota <= 0 or not 1 <= days <= 3650:
             flash("激活码参数不正确；单次最多生成 500 个", "error")
             return redirect(url_for("activation_codes_page"))
         created = []
@@ -548,7 +548,7 @@ def create_app():
             days = int(request.form.get("valid_days", "0"))
         except ValueError:
             speed, quota, days = 0, 0, 0
-        if not 10 <= speed <= 100 or quota <= 0 or not 1 <= days <= 3650:
+        if not 5 <= speed <= 500 or quota <= 0 or not 1 <= days <= 3650:
             flash("激活码参数不正确", "error")
             return redirect(url_for("secondary_accounts_page" if request.form.get("source") == "accounts" else "activation_codes_page"))
         with db() as conn:
