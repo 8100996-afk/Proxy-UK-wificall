@@ -90,6 +90,7 @@ def init_db():
                 quota_period_start TEXT,
                 stats_last_bytes INTEGER NOT NULL DEFAULT 0,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                ipv6_enabled INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -197,6 +198,8 @@ def init_db():
         if "direct_used_bytes" not in columns:
             conn.execute("ALTER TABLE subscriptions ADD COLUMN direct_used_bytes INTEGER NOT NULL DEFAULT 0")
             conn.execute("UPDATE subscriptions SET direct_used_bytes=used_bytes")
+        if "ipv6_enabled" not in columns:
+            conn.execute("ALTER TABLE subscriptions ADD COLUMN ipv6_enabled INTEGER NOT NULL DEFAULT 0")
         code_columns = {row["name"] for row in conn.execute("PRAGMA table_info(activation_codes)")}
         if "parent_period_bytes" not in code_columns:
             conn.execute("ALTER TABLE activation_codes ADD COLUMN parent_period_bytes INTEGER NOT NULL DEFAULT 0")
@@ -882,15 +885,19 @@ def clash_subscription_text(sub, wifi_only=False):
         # passwords and other user-controlled values without another dependency.
         return json.dumps(str(value), ensure_ascii=False)
 
+    ipv6_enabled = bool(sub["ipv6_enabled"]) if not wifi_only else False
     routing_rules = (
         "  - DST-PORT,500,PROXY\n  - DST-PORT,4500,PROXY\n  - MATCH,DIRECT"
-        if wifi_only else "  - MATCH,PROXY"
+        if wifi_only else (
+            "  - MATCH,PROXY" if ipv6_enabled
+            else "  - IP-CIDR6,::/0,REJECT,no-resolve\n  - MATCH,PROXY"
+        )
     )
     return f"""mixed-port: 7890
 allow-lan: false
 mode: rule
 log-level: warning
-ipv6: false
+ipv6: {str(ipv6_enabled).lower()}
 unified-delay: true
 tcp-concurrent: true
 find-process-mode: strict
@@ -966,8 +973,8 @@ proxy-groups:
   - name: PROXY
     type: fallback
     proxies:
-      - {quoted(xhttp_h3_name)}
       - {quoted(xhttp_h2_name)}
+      - {quoted(xhttp_h3_name)}
       - {quoted(vless_name)}
       - {quoted(trojan_name)}
     url: https://www.gstatic.com/generate_204

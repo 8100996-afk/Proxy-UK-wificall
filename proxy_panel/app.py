@@ -782,6 +782,7 @@ def create_app():
         name = request.form.get("name", "").strip()
         request_key = request.form.get("request_key", "").strip()
         sock_ids = list(dict.fromkeys(request.form.getlist("socks_id")))
+        ipv6_enabled = int(request.form.get("ipv6_enabled") == "1")
         try:
             quota_gb = float(request.form.get("quota_gb", "1000"))
         except ValueError:
@@ -814,12 +815,12 @@ def create_app():
                     return redirect(url_for("subscriptions_page"))
                 cur = conn.execute(
                     """INSERT INTO subscriptions
-                       (name,token,vless_uuid,trojan_password,request_key,quota_gb,
+                       (name,token,vless_uuid,trojan_password,request_key,quota_gb,ipv6_enabled,
                         quota_period_start,created_at,updated_at)
-                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                       VALUES(?,?,?,?,?,?,?,?,?,?)""",
                     (
                         name, token, vless_uuid, trojan_password, request_key,
-                        quota_gb, quota_period_start(), now(), now(),
+                        quota_gb, ipv6_enabled, quota_period_start(), now(), now(),
                     ),
                 )
                 sub_id = cur.lastrowid
@@ -831,6 +832,23 @@ def create_app():
         schedule_rebuild()
         add_event("success", f"创建订阅 {name}")
         flash("订阅已创建", "success")
+        return redirect(url_for("subscriptions_page"))
+
+    @app.post("/subscriptions/<int:sub_id>/ipv6")
+    @login_required
+    def subscription_ipv6(sub_id):
+        enabled = int("1" in request.form.getlist("ipv6_enabled"))
+        with db() as conn:
+            row = conn.execute("SELECT name FROM subscriptions WHERE id=?", (sub_id,)).fetchone()
+            if not row:
+                flash("订阅不存在", "error")
+                return redirect(url_for("subscriptions_page"))
+            conn.execute(
+                "UPDATE subscriptions SET ipv6_enabled=?,updated_at=? WHERE id=?",
+                (enabled, now(), sub_id),
+            )
+        add_event("info", f"订阅 {row['name']} IPv6 {'已开启' if enabled else '防泄露已开启'}")
+        flash("IPv6 设置已更新；请刷新 Clash/Mihomo 订阅后生效", "success")
         return redirect(url_for("subscriptions_page"))
 
     @app.post("/subscriptions/<int:sub_id>/exits")

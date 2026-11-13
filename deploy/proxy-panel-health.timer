@@ -1,10 +1,10 @@
 [Unit]
-Description=Run SOCKS5 health checks every 30 minutes
+Description=Run SOCKS5 health checks every 5 minutes
 
 [Timer]
 OnBootSec=10min
-OnUnitActiveSec=30min
-AccuracySec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
 Persistent=true
 
 [Install]

@@ -73,6 +73,10 @@ def test_routes_exit_switch_and_parent_quota(monkeypatch):
         main_profile = client.get(f"/s/{token}?format=base64")
         assert main_profile.status_code == 200
         assert main_profile.headers["Subscription-Userinfo"].startswith("upload=0; download=0; total=")
+        clash_profile = client.get(f"/s/{token}?format=clash")
+        assert clash_profile.status_code == 200
+        assert b"ipv6: false" in clash_profile.data
+        assert b"IP-CIDR6,::/0,REJECT,no-resolve" in clash_profile.data
         wifi_profile = client.get("/w/wifi-test-token?format=clash")
         assert wifi_profile.status_code == 200
         assert b"DST-PORT,500,PROXY" in wifi_profile.data
@@ -96,6 +100,12 @@ def test_routes_exit_switch_and_parent_quota(monkeypatch):
             f"/subscriptions/{sub_id}/exits",
             data={"csrf": "test-csrf", "socks_id": str(sock_id)},
         ).status_code == 302
+        assert client.post(
+            f"/subscriptions/{sub_id}/ipv6",
+            data={"csrf": "test-csrf", "ipv6_enabled": "1"},
+        ).status_code == 302
+        with db() as conn:
+            assert conn.execute("SELECT ipv6_enabled FROM subscriptions WHERE id=?", (sub_id,)).fetchone()[0] == 1
         assert client.post(
             "/subscriptions/999999/exits",
             data={"csrf": "test-csrf", "socks_id": str(sock_id)},
